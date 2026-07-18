@@ -20,4 +20,10 @@ public class NLPHelperTest {
         assertTrue(tokens.contains("artificial"));
         assertTrue(tokens.contains("intelligence"));
     }
+
+    @Test
+    public void should_prefer_local_prompt_before_web_lookup() {
+        assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("what is java"));
+        assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("hello there"));
+    }
 }

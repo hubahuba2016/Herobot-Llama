@@ -32,7 +32,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(binding.getRoot());
 
         viewModel = new ViewModelProvider(this).get(ChatViewModel.class);
-        viewModel.init(new Chatbot(this));
+        viewModel.init(new Chatbot(this, R.raw.chitchat, R.raw.chatbot_training_data));
         voiceAssistant = new VoiceAssistant(this);
 
         setupRecyclerView();

@@ -23,28 +23,40 @@ public class Chatbot {
     private static boolean isDownloading = false;
     private final ConversationHistory history = new ConversationHistory();
 
-    public Chatbot(Context context) {
+    /**
+     * Creates a Chatbot and seeds training data from one or more raw resource files.
+     *
+     * @param context   Android context
+     * @param rawResIds Zero or more raw resource IDs to seed (e.g. R.raw.chitchat,
+     *                  R.raw.chatbot_training_data). Seeding only happens when the
+     *                  database is empty. Files are loaded in the order given.
+     *                  If no IDs are provided, no automatic seeding is performed.
+     */
+    public Chatbot(Context context, int... rawResIds) {
         try {
             db = new DBHelper(context);
-            seedDatabase(context);
+            seedDatabase(context, rawResIds);
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize DBHelper: ", e);
             db = null;
         }
     }
 
-    private void seedDatabase(Context context) {
-        if (db == null) return;
+    private void seedDatabase(Context context, int[] rawResIds) {
+        if (db == null || rawResIds == null || rawResIds.length == 0) return;
         try {
             Cursor cursor = db.getAll();
             if (cursor != null) {
                 if (cursor.getCount() == 0) {
-                    Log.d(TAG, "Database empty. Seeding with chit-chat data...");
-                    try {
-                        InputStream is = context.getResources().openRawResource(R.raw.chitchat);
-                        importTrainingData(is);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to seed database", e);
+                    Log.d(TAG, "Database empty. Seeding from " + rawResIds.length + " resource file(s)...");
+                    for (int resId : rawResIds) {
+                        try {
+                            InputStream is = context.getResources().openRawResource(resId);
+                            importTrainingData(is);
+                            Log.d(TAG, "Seeded resource id: " + resId);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to seed resource id: " + resId, e);
+                        }
                     }
                 }
                 cursor.close();
@@ -120,15 +132,11 @@ public class Chatbot {
             return res;
         }
 
-        // 5. Internet Search: Wikipedia (High Priority for 'what/who is')
-        if (normalizedInput.matches("^(what is|who is|tell me about|who was|define|search for).*")) {
-            String topic = normalizedInput.replaceAll("^(what is|who is|tell me about|who was|define|search for)", "").trim();
-            String wikiReply = fetchFromWikipedia(topic);
-            if (wikiReply != null) {
-                String cleaned = cleanText(wikiReply);
-                String formatted = "I found this on Wikipedia: " + cleaned;
-                train(normalizedInput, cleaned);
-                BotResponse res = new BotResponse(formatted, BotResponse.Source.WEB);
+        // 5. Prefer the local prompt/LLM path before any web lookup
+        if (shouldPreferLocalPromptBeforeWeb(normalizedInput)) {
+            String llmReply = askLocalLLM(normalizedInput);
+            if (llmReply != null) {
+                BotResponse res = new BotResponse(llmReply, BotResponse.Source.LLM);
                 history.add("HeroBot: " + res.getText());
                 return res;
             }
@@ -140,14 +148,6 @@ public class Chatbot {
             String cleaned = cleanText(ddgReply);
             train(normalizedInput, cleaned);
             BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
-            history.add("HeroBot: " + res.getText());
-            return res;
-        }
-
-        // 7. Ollama LLM Fallback (With Context)
-        String llmReply = askLocalLLM(normalizedInput);
-        if (llmReply != null) {
-            BotResponse res = new BotResponse(llmReply, BotResponse.Source.LLM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
@@ -167,12 +167,22 @@ public class Chatbot {
         return cleaned.trim();
     }
 
-    private String normalizeText(String input) {
+    public static boolean shouldPreferLocalPromptBeforeWeb(String input) {
+        if (input == null) return false;
+        String normalized = normalizeTextStatic(input);
+        return !normalized.isEmpty();
+    }
+
+    private static String normalizeTextStatic(String input) {
         if (input == null) return "";
         String normalized = Normalizer.normalize(input, Normalizer.Form.NFD);
         normalized = normalized.replaceAll("\\p{M}+", "");
         normalized = normalized.replaceAll("[^\\p{L}\\p{N} ]", " ");
         return normalized.toLowerCase(Locale.ROOT).trim();
+    }
+
+    private String normalizeText(String input) {
+        return normalizeTextStatic(input);
     }
 
     // =========================
