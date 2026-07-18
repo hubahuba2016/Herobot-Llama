@@ -26,13 +26,35 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    val releaseStoreFile = project.findProperty("herobotStoreFile") as String?
+        ?: System.getenv("HEROBOT_STORE_FILE")
+        ?: "app/herobot-release.keystore"
+
+    val releaseStorePassword = project.findProperty("herobotStorePassword") as String?
+        ?: System.getenv("HEROBOT_STORE_PASSWORD")
+        ?: "774954hbkckpbgt"
+
+    val releaseKeyAlias = project.findProperty("herobotKeyAlias") as String?
+        ?: System.getenv("HEROBOT_KEY_ALIAS")
+        ?: "herobot"
+
+    val releaseKeyPassword = project.findProperty("herobotKeyPassword") as String?
+        ?: System.getenv("HEROBOT_KEY_PASSWORD")
+        ?: "774954hbkckpbgt"
+
+    val normalizedReleaseStoreFile = if (File(releaseStoreFile).isAbsolute) {
+        File(releaseStoreFile)
+    } else {
+        rootProject.file(releaseStoreFile)
+    }
     
     signingConfigs {
         create("release") {
-            storeFile = file("herobot-release.keystore")
-            storePassword = "774954hbkckpbgt"
-            keyAlias = "herobot"
-            keyPassword = "774954hbkckpbgt"
+            storeFile = normalizedReleaseStoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
         }
     }
 
