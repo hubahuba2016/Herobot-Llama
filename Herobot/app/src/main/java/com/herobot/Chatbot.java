@@ -23,22 +23,34 @@ public class Chatbot {
     private final ConversationHistory history = new ConversationHistory();
 
     public Chatbot(Context context) {
-        db = new DBHelper(context);
-        seedDatabase(context);
+        try {
+            db = new DBHelper(context);
+            seedDatabase(context);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to initialize DBHelper: ", e);
+            db = null;
+        }
     }
 
     private void seedDatabase(Context context) {
-        Cursor cursor = db.getAll();
-        if (cursor.getCount() == 0) {
-            Log.d(TAG, "Database empty. Seeding with chit-chat data...");
-            try {
-                InputStream is = context.getResources().openRawResource(R.raw.chitchat);
-                importTrainingData(is);
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to seed database", e);
+        if (db == null) return;
+        try {
+            Cursor cursor = db.getAll();
+            if (cursor != null) {
+                if (cursor.getCount() == 0) {
+                    Log.d(TAG, "Database empty. Seeding with chit-chat data...");
+                    try {
+                        InputStream is = context.getResources().openRawResource(R.raw.chitchat);
+                        importTrainingData(is);
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed to seed database", e);
+                    }
+                }
+                cursor.close();
             }
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking or seeding database: ", e);
         }
-        cursor.close();
     }
 
     // =========================
@@ -55,7 +67,14 @@ public class Chatbot {
         }
 
         // 1. Exact match from DB
-        String dbAnswer = db.getAnswer(input);
+        String dbAnswer = null;
+        if (db != null) {
+            try {
+                dbAnswer = db.getAnswer(input);
+            } catch (Exception e) {
+                Log.e(TAG, "DB error getting answer: ", e);
+            }
+        }
         if (dbAnswer != null) {
             BotResponse res = new BotResponse(dbAnswer, BotResponse.Source.DATABASE);
             history.add("HeroBot: " + res.getText());
@@ -145,7 +164,13 @@ public class Chatbot {
     // TRAIN BOT
     // =========================
     public void train(String question, String answer) {
-        db.insertQA(question, answer);
+        if (db != null) {
+            try {
+                db.insertQA(question, answer);
+            } catch (Exception e) {
+                Log.e(TAG, "DB error inserting QA: ", e);
+            }
+        }
     }
 
     public void importTrainingData(InputStream is) {
@@ -172,17 +197,29 @@ public class Chatbot {
     // SIMPLE NLP MATCH (NO LIBRARIES)
     // =========================
     private String findBestMatch(String input) {
-
-        Cursor cursor = db.getAll();
+        if (db == null) return null;
+        Cursor cursor = null;
+        try {
+            cursor = db.getAll();
+        } catch (Exception e) {
+            Log.e(TAG, "DB error during best match search: ", e);
+            return null;
+        }
+        if (cursor == null) return null;
 
         List<String> questions = new ArrayList<>();
         List<String> answers = new ArrayList<>();
 
-        while (cursor.moveToNext()) {
-            questions.add(cursor.getString(0));
-            answers.add(cursor.getString(1));
+        try {
+            while (cursor.moveToNext()) {
+                questions.add(cursor.getString(0));
+                answers.add(cursor.getString(1));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error reading from cursor: ", e);
+        } finally {
+            cursor.close();
         }
-        cursor.close();
 
         if (questions.isEmpty()) return null;
 

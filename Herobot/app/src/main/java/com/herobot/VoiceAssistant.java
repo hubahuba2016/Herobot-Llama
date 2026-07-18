@@ -10,26 +10,38 @@ import java.util.Locale;
 
 public class VoiceAssistant implements TextToSpeech.OnInitListener {
 
-    private final TextToSpeech tts;
+    private TextToSpeech tts = null;
     private boolean ttsReady = false;
 
     public VoiceAssistant(Activity activity) {
-        tts = new TextToSpeech(activity, this);
+        try {
+            tts = new TextToSpeech(activity.getApplicationContext(), this);
+        } catch (Exception e) {
+            Log.e("VoiceAssistant", "Failed to initialize TTS: " + e.getMessage());
+        }
     }
 
     @Override
     public void onInit(int status) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(Locale.US);
-            ttsReady = true;
+        if (status == TextToSpeech.SUCCESS && tts != null) {
+            try {
+                tts.setLanguage(Locale.US);
+                ttsReady = true;
+            } catch (Exception e) {
+                Log.e("VoiceAssistant", "Failed to set language on TTS: " + e.getMessage());
+            }
         } else {
             Log.e("VoiceAssistant", "TTS Initialization failed!");
         }
     }
 
     public void speak(String text) {
-        if (ttsReady) {
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null);
+        if (ttsReady && tts != null) {
+            try {
+                tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null);
+            } catch (Exception e) {
+                Log.e("VoiceAssistant", "Failed to speak: " + e.getMessage());
+            }
         }
     }
 
@@ -47,8 +59,12 @@ public class VoiceAssistant implements TextToSpeech.OnInitListener {
 
     public void shutdown() {
         if (tts != null) {
-            tts.stop();
-            tts.shutdown();
+            try {
+                tts.stop();
+                tts.shutdown();
+            } catch (Exception e) {
+                Log.e("VoiceAssistant", "Failed to shutdown TTS: " + e.getMessage());
+            }
         }
     }
 }
