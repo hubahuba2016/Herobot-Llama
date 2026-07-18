@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.io.InputStreamReader;
+import java.text.Normalizer;
 import java.util.*;
 
 public class Chatbot {
@@ -58,11 +59,11 @@ public class Chatbot {
     // =========================
     public BotResponse reply(String input) {
 
-        input = input.toLowerCase().trim();
-        history.add("User: " + input);
+        String normalizedInput = normalizeText(input);
+        history.add("User: " + normalizedInput);
 
         // 0. Handle context-aware follow-ups
-        if (input.equals("why?") || input.equals("how?")) {
+        if (normalizedInput.equals("why?") || normalizedInput.equals("how?")) {
             return new BotResponse("I'm basing my knowledge on my training data and the information I find online.", BotResponse.Source.SYSTEM);
         }
 
@@ -70,7 +71,7 @@ public class Chatbot {
         String dbAnswer = null;
         if (db != null) {
             try {
-                dbAnswer = db.getAnswer(input);
+                dbAnswer = db.getAnswer(normalizedInput);
             } catch (Exception e) {
                 Log.e(TAG, "DB error getting answer: ", e);
             }
@@ -81,32 +82,38 @@ public class Chatbot {
             return res;
         }
 
-        // 2. Simple built-in responses
-        if (input.contains("hello") || input.contains("hi ")) {
+        // 2. Bilingual built-in responses
+        if (normalizedInput.contains("hello") || normalizedInput.contains("hi ") || normalizedInput.contains("hey")) {
             BotResponse res = new BotResponse("Hi! I'm HeroBot.", BotResponse.Source.SYSTEM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
 
-        if (input.contains("who are you")) {
+        if (normalizedInput.contains("halo") || normalizedInput.contains("hai") || normalizedInput.contains("selamat pagi") || normalizedInput.contains("selamat siang") || normalizedInput.contains("selamat sore") || normalizedInput.contains("selamat malam")) {
+            BotResponse res = new BotResponse("Halo! Saya HeroBot, asisten Android Anda.", BotResponse.Source.SYSTEM);
+            history.add("HeroBot: " + res.getText());
+            return res;
+        }
+
+        if (normalizedInput.contains("who are you") || normalizedInput.contains("siapa kamu") || normalizedInput.contains("siapa namamu")) {
             BotResponse res = new BotResponse("I am HeroBot, your Android assistant.", BotResponse.Source.SYSTEM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
 
-        if (input.contains("help")) {
-            BotResponse res = new BotResponse("I can answer trained questions or learn new ones!", BotResponse.Source.SYSTEM);
+        if (normalizedInput.contains("help") || normalizedInput.contains("bantu") || normalizedInput.contains("tolong")) {
+            BotResponse res = new BotResponse("I can answer trained questions or learn new ones! Saya bisa menjawab pertanyaan yang sudah dilatih dan belajar hal baru.", BotResponse.Source.SYSTEM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
 
         // 3. Simple built-in personality
-        if (input.contains("favorite color")) {
-            return new BotResponse("I like Blue, it reminds me of a clean interface.", BotResponse.Source.SYSTEM);
+        if (normalizedInput.contains("favorite color") || normalizedInput.contains("warna favorit") || normalizedInput.contains("warna kesukaan")) {
+            return new BotResponse("I like Blue, it reminds me of a clean interface. Saya suka biru, karena terasa rapi dan bersih.", BotResponse.Source.SYSTEM);
         }
 
         // 4. Fallback learning (simple similarity search)
-        String smart = findBestMatch(input);
+        String smart = findBestMatch(normalizedInput);
         if (smart != null) {
             BotResponse res = new BotResponse(smart, BotResponse.Source.DATABASE);
             history.add("HeroBot: " + res.getText());
@@ -114,13 +121,13 @@ public class Chatbot {
         }
 
         // 5. Internet Search: Wikipedia (High Priority for 'what/who is')
-        if (input.matches("^(what is|who is|tell me about|who was|define|search for).*")) {
-            String topic = input.replaceAll("^(what is|who is|tell me about|who was|define|search for)", "").trim();
+        if (normalizedInput.matches("^(what is|who is|tell me about|who was|define|search for).*")) {
+            String topic = normalizedInput.replaceAll("^(what is|who is|tell me about|who was|define|search for)", "").trim();
             String wikiReply = fetchFromWikipedia(topic);
             if (wikiReply != null) {
                 String cleaned = cleanText(wikiReply);
                 String formatted = "I found this on Wikipedia: " + cleaned;
-                train(input, cleaned);
+                train(normalizedInput, cleaned);
                 BotResponse res = new BotResponse(formatted, BotResponse.Source.WEB);
                 history.add("HeroBot: " + res.getText());
                 return res;
@@ -128,17 +135,17 @@ public class Chatbot {
         }
 
         // 6. Internet Search: DuckDuckGo (General fallback)
-        String ddgReply = fetchFromWeb(input);
+        String ddgReply = fetchFromWeb(normalizedInput);
         if (ddgReply != null) {
             String cleaned = cleanText(ddgReply);
-            train(input, cleaned); 
+            train(normalizedInput, cleaned);
             BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
             history.add("HeroBot: " + res.getText());
             return res;
         }
 
         // 7. Ollama LLM Fallback (With Context)
-        String llmReply = askLocalLLM(input);
+        String llmReply = askLocalLLM(normalizedInput);
         if (llmReply != null) {
             BotResponse res = new BotResponse(llmReply, BotResponse.Source.LLM);
             history.add("HeroBot: " + res.getText());
@@ -158,6 +165,14 @@ public class Chatbot {
         // Remove citation brackets like [1], [12], [citation needed]
         String cleaned = text.replaceAll("\\[\\d+\\]|\\[[^\\]]+\\]", "");
         return cleaned.trim();
+    }
+
+    private String normalizeText(String input) {
+        if (input == null) return "";
+        String normalized = Normalizer.normalize(input, Normalizer.Form.NFD);
+        normalized = normalized.replaceAll("\\p{M}+", "");
+        normalized = normalized.replaceAll("[^\\p{L}\\p{N} ]", " ");
+        return normalized.toLowerCase(Locale.ROOT).trim();
     }
 
     // =========================

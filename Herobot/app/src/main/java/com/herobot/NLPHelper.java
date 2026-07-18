@@ -1,8 +1,10 @@
 package com.herobot;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -18,7 +20,7 @@ public class NLPHelper {
 
     public static List<String> tokenize(String text) {
         if (text == null) return new ArrayList<>();
-        text = text.replaceAll("[^a-zA-Z0-9 ]", "").toLowerCase();
+        text = normalize(text);
 
         List<String> words = new ArrayList<>();
         for (String w : text.split("\\s+")) {
@@ -27,6 +29,14 @@ public class NLPHelper {
             }
         }
         return words;
+    }
+
+    public static String normalize(String text) {
+        if (text == null) return "";
+        String normalized = Normalizer.normalize(text, Normalizer.Form.NFD);
+        normalized = normalized.replaceAll("\\p{M}+", "");
+        normalized = normalized.replaceAll("[^\\p{L}\\p{N} ]", " ");
+        return normalized.toLowerCase(Locale.ROOT).trim();
     }
 
     public static Map<String, Integer> getVector(String text) {

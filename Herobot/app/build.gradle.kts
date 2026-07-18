@@ -55,7 +55,9 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.0")
-    
+
+    testImplementation("junit:junit:4.13.2")
+
     implementation("org.apache.commons:commons-math3:3.6.1")
     implementation("org.json:json:20240303")
 }

@@ -1,6 +1,7 @@
 package com.herobot;
 import java.io.*;
 import java.sql.*;
+import java.text.Normalizer;
 import java.util.*;
 import java.util.stream.*;
 import org.apache.commons.math3.linear.*;
@@ -104,6 +105,7 @@ public class Chatbot {
     }
 
     private static String getResponse(Connection conn, String input) throws SQLException {
+    String normalizedInput = normalizeText(input);
     Statement stmt = conn.createStatement();
     ResultSet rs = stmt.executeQuery("SELECT question, answer FROM chatbot");
 
@@ -118,12 +120,12 @@ public class Chatbot {
         return "I'm not trained yet. Type 'train' to teach me.";
 
     List<String> allTexts = new ArrayList<>(questions);
-    allTexts.add(input);
+    allTexts.add(normalizedInput);
 
     // ✅ Build vocab BEFORE vectorizing
     Map<String, Integer> vocab = buildVocab(allTexts);
 
-    RealVector inputVec = vectorize(input, vocab);
+    RealVector inputVec = vectorize(normalizedInput, vocab);
 
     double bestScore = 0.0;
     String bestAnswer = "I don't know how to respond to that.";
@@ -168,7 +170,7 @@ public class Chatbot {
 
 
     private static RealVector vectorize(String text, Map<String, Integer> vocab) {
-    text = text.replaceAll("[^a-zA-Z0-9 ]", "");
+    text = normalizeText(text).replaceAll("[^a-zA-Z0-9 ]", "");
 
     double[] vec = new double[vocab.size()];
 
@@ -187,6 +189,14 @@ public class Chatbot {
         double norm1 = v1.getNorm();
         double norm2 = v2.getNorm();
         return (norm1 == 0 || norm2 == 0) ? 0.0 : dot / (norm1 * norm2);
+    }
+
+    private static String normalizeText(String input) {
+        if (input == null) return "";
+        String normalized = Normalizer.normalize(input, Normalizer.Form.NFD);
+        normalized = normalized.replaceAll("\\p{M}+", "");
+        normalized = normalized.replaceAll("[^\\p{L}\\p{N} ]", " ");
+        return normalized.toLowerCase(Locale.ROOT).trim();
     }
     private static String askLocalLLM(String prompt) {
         try {
@@ -249,14 +259,14 @@ public class Chatbot {
     }
     public String reply(String input) {
 
-        input = input.toLowerCase();
+        input = normalizeText(input);
 
-        if (input.contains("hi") || input.contains("hello")) {
-            return "Hello! I'm HeroBot.";
+        if (input.contains("hi") || input.contains("hello") || input.contains("hey") || input.contains("halo") || input.contains("hai")) {
+            return "Hello! I'm HeroBot. Halo! Saya HeroBot.";
         }
 
-        if (input.contains("who are you")) {
-            return "I am HeroBot, your assistant.";
+        if (input.contains("who are you") || input.contains("siapa kamu") || input.contains("siapa namamu")) {
+            return "I am HeroBot, your assistant. Saya HeroBot, asisten Anda.";
         }
 
         return "I don't understand yet.";
