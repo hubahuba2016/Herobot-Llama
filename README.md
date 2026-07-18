@@ -1,3 +1,7 @@
+![Java](https://img.shields.io/badge/Java-17+-orange)
+![Ollama](https://img.shields.io/badge/Ollama-Compatible-blue)
+![Llama 3.2](https://img.shields.io/badge/Llama-3.2%201B-green)
+![License](https://img.shields.io/badge/License-GPLv3-blue)
 # 🤖 Herobot-Llama
 
 **Herobot-Llama** is a lightweight AI chatbot written in **Java** that uses **Ollama** to run the **Llama 3.2 1B** model locally. It also features **Internet search capabilities**, allowing the chatbot to retrieve up-to-date information when the model's built-in knowledge isn't enough.
@@ -159,9 +163,21 @@ If you'd like to improve Herobot-Llama:
 
 ---
 
-# License
+## License
 
-This project is licensed under the MIT License (or your preferred license).
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+You are free to:
+
+* ✅ Use the software for any purpose.
+* ✅ Study and modify the source code.
+* ✅ Redistribute copies.
+* ✅ Distribute modified versions under the same GPL-3.0 license.
+
+Any derivative work based on this project must also be licensed under the GPL-3.0.
+
+For more information, see the included `LICENSE` file or visit the GNU website:
+https://www.gnu.org/licenses/gpl-3.0.html
 
 ---
 
