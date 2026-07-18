@@ -204,7 +204,7 @@ public class Chatbot {
 
             // ✅ Build JSON properly
             JSONObject jsonBody = new JSONObject();
-            jsonBody.put("model", "phi");
+            jsonBody.put("model", "llama3.2:1b");
             jsonBody.put("prompt", fullPrompt);
             jsonBody.put("stream", false);
 

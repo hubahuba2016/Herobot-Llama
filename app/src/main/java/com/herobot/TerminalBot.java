@@ -28,7 +28,7 @@ public class TerminalBot {
             conn.setReadTimeout(60000);    
 
             String cleanPrompt = prompt.replace("\"", "\\\"");
-            String jsonInputString = "{\"model\": \"phi3\", \"prompt\": \"" + cleanPrompt + "\", \"stream\": false}";
+            String jsonInputString = "{\"model\": \"llama3.2:1b\", \"prompt\": \"" + cleanPrompt + "\", \"stream\": false}";
 
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(jsonInputString.getBytes("utf-8"));

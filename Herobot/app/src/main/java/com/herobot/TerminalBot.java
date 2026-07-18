@@ -6,7 +6,7 @@ import java.util.Scanner;
 public class TerminalBot {
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
-        System.out.println("--- HeroBot Terminal (Ollama Phi-3) ---");
+        System.out.println("--- HeroBot Terminal (Ollama Llama 3.2 1B) ---");
         System.out.println("Type 'exit' to quit.");
         while (true) {
             System.out.print("\nYou: ");
@@ -23,7 +23,7 @@ public class TerminalBot {
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
             String cleanPrompt = prompt.replace("\"", "\\\"");
-            String jsonInputString = "{\"model\": \"phi3\", \"prompt\": \"" + cleanPrompt + "\", \"stream\": false}";
+            String jsonInputString = "{\"model\": \"llama3.2:1b\", \"prompt\": \"" + cleanPrompt + "\", \"stream\": false}";
             try (OutputStream os = conn.getOutputStream()) { os.write(jsonInputString.getBytes("utf-8")); }
             try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
                 StringBuilder response = new StringBuilder();

@@ -308,7 +308,7 @@ public class Chatbot {
             fullPrompt.append("HeroBot:");
 
             JSONObject jsonBody = new JSONObject();
-            jsonBody.put("model", "phi"); // Or your preferred model
+            jsonBody.put("model", "llama3.2:1b"); // Or your preferred model
             jsonBody.put("prompt", fullPrompt.toString());
             jsonBody.put("stream", false);
 
