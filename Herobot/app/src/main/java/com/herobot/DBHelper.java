@@ -9,11 +9,15 @@ import android.database.Cursor;
 public class DBHelper extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "chatbot.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     public static final String TABLE = "chatbot";
     public static final String COL_Q = "question";
     public static final String COL_A = "answer";
+
+    public static final String PARAM_TABLE = "chatbot_parameters";
+    public static final String COL_KEY = "parameter_key";
+    public static final String COL_VALUE = "parameter_value";
 
     public DBHelper(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -26,12 +30,38 @@ public class DBHelper extends SQLiteOpenHelper {
             COL_Q + " TEXT PRIMARY KEY, " +
             COL_A + " TEXT NOT NULL)"
         );
+
+        db.execSQL(
+            "CREATE TABLE " + PARAM_TABLE + " (" +
+            COL_KEY + " TEXT PRIMARY KEY, " +
+            COL_VALUE + " TEXT NOT NULL)"
+        );
+
+        seedDefaultParameters(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE);
-        onCreate(db);
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS " + PARAM_TABLE + " (" +
+            COL_KEY + " TEXT PRIMARY KEY, " +
+            COL_VALUE + " TEXT NOT NULL)"
+        );
+        seedDefaultParameters(db);
+    }
+
+    private void seedDefaultParameters(SQLiteDatabase db) {
+        insertOrUpdateParameter(db, "model", "llama3.2:1b");
+        insertOrUpdateParameter(db, "temperature", "0.7");
+        insertOrUpdateParameter(db, "top_p", "0.9");
+        insertOrUpdateParameter(db, "stream", "false");
+    }
+
+    private void insertOrUpdateParameter(SQLiteDatabase db, String key, String value) {
+        ContentValues values = new ContentValues();
+        values.put(COL_KEY, key);
+        values.put(COL_VALUE, value);
+        db.insertWithOnConflict(PARAM_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     // INSERT / UPDATE
@@ -68,5 +98,27 @@ public class DBHelper extends SQLiteOpenHelper {
 
         c.close();
         return null;
+    }
+
+    public void setParameter(String key, String value) {
+        SQLiteDatabase db = getWritableDatabase();
+        insertOrUpdateParameter(db, key, value);
+    }
+
+    public String getParameter(String key, String defaultValue) {
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = db.rawQuery(
+            "SELECT parameter_value FROM " + PARAM_TABLE + " WHERE parameter_key=?",
+            new String[]{key}
+        );
+
+        try {
+            if (c.moveToFirst()) {
+                return c.getString(0);
+            }
+            return defaultValue;
+        } finally {
+            c.close();
+        }
     }
 }

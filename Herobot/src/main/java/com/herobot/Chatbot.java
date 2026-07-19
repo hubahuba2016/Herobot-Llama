@@ -52,6 +52,19 @@ public class Chatbot {
             "    answer TEXT NOT NULL\n" +
             ")"
         );
+        stmt.executeUpdate(
+            "CREATE TABLE IF NOT EXISTS chatbot_parameters (\n" +
+            "    parameter_key TEXT PRIMARY KEY,\n" +
+            "    parameter_value TEXT NOT NULL\n" +
+            ")"
+        );
+        stmt.executeUpdate(
+            "INSERT OR REPLACE INTO chatbot_parameters(parameter_key, parameter_value) VALUES\n" +
+            "    ('model', 'llama3.2:1b'),\n" +
+            "    ('temperature', '0.7'),\n" +
+            "    ('top_p', '0.9'),\n" +
+            "    ('stream', 'false')"
+        );
     }
     return conn;
 }

@@ -369,10 +369,17 @@ public class Chatbot {
             }
             fullPrompt.append("HeroBot:");
 
+            String model = db != null ? db.getParameter("model", "llama3.2:1b") : "llama3.2:1b";
+            String temperature = db != null ? db.getParameter("temperature", "0.7") : "0.7";
+            String topP = db != null ? db.getParameter("top_p", "0.9") : "0.9";
+            String stream = db != null ? db.getParameter("stream", "false") : "false";
+
             JSONObject jsonBody = new JSONObject();
-            jsonBody.put("model", "llama3.2:1b"); // Or your preferred model
+            jsonBody.put("model", model);
             jsonBody.put("prompt", fullPrompt.toString());
-            jsonBody.put("stream", false);
+            jsonBody.put("stream", Boolean.parseBoolean(stream));
+            jsonBody.put("temperature", Double.parseDouble(temperature));
+            jsonBody.put("top_p", Double.parseDouble(topP));
 
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(jsonBody.toString().getBytes(StandardCharsets.UTF_8));
