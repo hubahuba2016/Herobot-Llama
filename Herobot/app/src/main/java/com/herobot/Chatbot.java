@@ -146,7 +146,6 @@ public class Chatbot {
         String ddgReply = fetchFromWeb(normalizedInput);
         if (ddgReply != null) {
             String cleaned = cleanText(ddgReply);
-            train(normalizedInput, cleaned);
             BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
             history.add("HeroBot: " + res.getText());
             return res;
