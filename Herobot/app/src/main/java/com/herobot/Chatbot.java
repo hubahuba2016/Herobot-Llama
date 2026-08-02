@@ -359,6 +359,11 @@ public class Chatbot {
             return ddgReply;
         }
 
+        String searxngReply = fetchFromSearxng(query);
+        if (searxngReply != null && !searxngReply.isEmpty()) {
+            return searxngReply;
+        }
+
         String googleReply = fetchFromGoogle(query);
         if (googleReply != null && !googleReply.isEmpty()) {
             return googleReply;
@@ -407,6 +412,49 @@ public class Chatbot {
             }
         } catch (Exception e) {
             Log.e(TAG, "DuckDuckGo Search Error: " + e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return null;
+    }
+
+    private String fetchFromSearxng(String query) {
+        HttpURLConnection conn = null;
+        try {
+            String urlStr = "https://searxng.org/search?format=json&q=" +
+                    URLEncoder.encode(query, StandardCharsets.UTF_8);
+
+            URL url = createUrl(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            if (conn.getResponseCode() == 200) {
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        response.append(line);
+                    }
+                    JSONObject json = new JSONObject(response.toString());
+                    if (json.has("results")) {
+                        org.json.JSONArray results = json.getJSONArray("results");
+                        if (results.length() > 0) {
+                            JSONObject first = results.optJSONObject(0);
+                            if (first != null) {
+                                String content = first.optString("content", "");
+                                if (!content.isEmpty()) return content;
+                                String title = first.optString("title", "");
+                                if (!title.isEmpty()) return title;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "SearxNG Search Error: " + e.getMessage());
         } finally {
             if (conn != null) conn.disconnect();
         }

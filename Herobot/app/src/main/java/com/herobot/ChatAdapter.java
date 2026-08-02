@@ -51,6 +51,7 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             ((UserViewHolder) holder).tvMessage.setText(message.getText());
         } else if (holder instanceof BotViewHolder) {
             ((BotViewHolder) holder).tvMessage.setText(message.getText());
+            ((BotViewHolder) holder).tvMessage.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
             ((BotViewHolder) holder).tvSource.setText("Source: " + message.getSource());
         }
     }
