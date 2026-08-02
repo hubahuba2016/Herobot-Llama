@@ -6,6 +6,7 @@ import java.util.*;
 import java.util.stream.*;
 import org.apache.commons.math3.linear.*;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
 import org.json.JSONObject;
@@ -213,7 +214,7 @@ public class Chatbot {
     }
     private static String askLocalLLM(String prompt) {
         try {
-            URL url = new URL("http://localhost:11434/api/generate");
+            URL url = URI.create("http://localhost:11434/api/generate").toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
 
             conn.setRequestMethod("POST");
