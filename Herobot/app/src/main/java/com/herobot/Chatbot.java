@@ -77,7 +77,7 @@ public class Chatbot {
 
         // 0. Handle context-aware follow-ups
         if (normalizedInput.equals("why?") || normalizedInput.equals("how?")) {
-            return new BotResponse("I'm basing my knowledge on my training data and the information I find online.", BotResponse.Source.SYSTEM);
+            return new BotResponse("I base my answers on the knowledge and sources I have access to.", BotResponse.Source.SYSTEM);
         }
 
         // 1. Exact match from DB
@@ -115,7 +115,7 @@ public class Chatbot {
         }
 
         if (normalizedInput.contains("help") || normalizedInput.contains("bantu") || normalizedInput.contains("tolong")) {
-            BotResponse res = new BotResponse("I can answer trained questions or learn new ones! Saya bisa menjawab pertanyaan yang sudah dilatih dan belajar hal baru.", BotResponse.Source.SYSTEM);
+            BotResponse res = new BotResponse("I can answer questions, search the web for info, and help with general topics.", BotResponse.Source.SYSTEM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
@@ -155,16 +155,16 @@ public class Chatbot {
             }
         }
 
-        // 6. Internet Search: DuckDuckGo (General fallback)
-        String ddgReply = fetchFromWeb(normalizedInput);
-        if (ddgReply != null) {
-            String cleaned = cleanText(ddgReply);
+        // 6. Internet Search: DuckDuckGo with Google fallback (General fallback)
+        String webReply = fetchFromWeb(normalizedInput);
+        if (webReply != null) {
+            String cleaned = cleanText(webReply);
             BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
             history.add("HeroBot: " + res.getText());
             return res;
         }
 
-        BotResponse res = new BotResponse("I'm not sure how to answer that. You can teach me by typing 'train: question | answer'", BotResponse.Source.NONE);
+        BotResponse res = new BotResponse("I'm not sure how to answer that right now. Please try rephrasing or ask another question.", BotResponse.Source.NONE);
         history.add("HeroBot: " + res.getText());
         return res;
     }
@@ -354,10 +354,24 @@ public class Chatbot {
     }
 
     private String fetchFromWeb(String query) {
+        String ddgReply = fetchFromDuckDuckGo(query);
+        if (ddgReply != null && !ddgReply.isEmpty()) {
+            return ddgReply;
+        }
+
+        String googleReply = fetchFromGoogle(query);
+        if (googleReply != null && !googleReply.isEmpty()) {
+            return googleReply;
+        }
+
+        return null;
+    }
+
+    private String fetchFromDuckDuckGo(String query) {
         HttpURLConnection conn = null;
         try {
             String urlStr = "https://api.duckduckgo.com/?q=" +
-                    URLEncoder.encode(query, StandardCharsets.UTF_8.name()) +
+                    URLEncoder.encode(query, StandardCharsets.UTF_8) +
                     "&format=json&no_html=1&skip_disambig=1";
 
             URL url = createUrl(urlStr);
@@ -374,7 +388,7 @@ public class Chatbot {
                         response.append(line);
                     }
                     JSONObject json = new JSONObject(response.toString());
-                    
+
                     // Priority 1: AbstractText
                     String abstractText = json.optString("AbstractText", "");
                     if (!abstractText.isEmpty()) return abstractText;
@@ -392,10 +406,81 @@ public class Chatbot {
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Web Search Error: " + e.getMessage());
+            Log.e(TAG, "DuckDuckGo Search Error: " + e.getMessage());
         } finally {
             if (conn != null) conn.disconnect();
         }
+        return null;
+    }
+
+    private String fetchFromGoogle(String query) {
+        HttpURLConnection conn = null;
+        try {
+            String urlStr = "https://www.google.com/search?hl=en&num=3&q=" +
+                    URLEncoder.encode(query, StandardCharsets.UTF_8);
+
+            URL url = createUrl(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            if (conn.getResponseCode() == 200) {
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        response.append(line);
+                    }
+                    String snippet = extractSearchResultSnippet(response.toString());
+                    if (snippet != null && !snippet.isEmpty()) {
+                        return snippet;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Google Search Error: " + e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+
+        try {
+            return "See Google search results: " + fetchGoogleSearchUrl(query);
+        } catch (Exception e) {
+            return "See Google search results: https://www.google.com/search?q=" + query.replace(" ", "+");
+        }
+    }
+
+    static String fetchGoogleSearchUrl(String query) {
+        try {
+            return "https://www.google.com/search?hl=en&q=" + URLEncoder.encode(query, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "https://www.google.com/search?hl=en&q=" + query.replace(" ", "+");
+        }
+    }
+
+    static String extractSearchResultSnippet(String html) {
+        if (html == null || html.isEmpty()) return null;
+
+        String[] patterns = {
+                "(?i)<div[^>]*class=\"[^\"]*(?:BNeawe|Vwi3C|kCrYT)[^\"]*\"[^>]*>(.*?)</div>",
+                "(?i)<span[^>]*class=\"[^\"]*(?:BNeawe|Vwi3C|kCrYT)[^\"]*\"[^>]*>(.*?)</span>"
+        };
+
+        for (String pattern : patterns) {
+            java.util.regex.Pattern regex = java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.DOTALL);
+            java.util.regex.Matcher matcher = regex.matcher(html);
+            if (matcher.find()) {
+                String snippet = matcher.group(1);
+                snippet = snippet.replaceAll("<[^>]+>", " ");
+                snippet = snippet.replaceAll("\\s+", " ").trim();
+                if (!snippet.isEmpty()) {
+                    return snippet;
+                }
+            }
+        }
+
         return null;
     }
 
