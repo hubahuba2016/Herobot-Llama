@@ -10,6 +10,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.io.InputStreamReader;
@@ -132,7 +133,19 @@ public class Chatbot {
             return res;
         }
 
-        // 5. Prefer the local prompt/LLM path before any web lookup
+        boolean webSearchEnabled = isWebSearchEnabled();
+
+        if (shouldAttemptWebSearch(normalizedInput, webSearchEnabled)) {
+            String ddgReply = fetchFromWeb(normalizedInput);
+            if (ddgReply != null) {
+                String cleaned = cleanText(ddgReply);
+                BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
+                history.add("HeroBot: " + res.getText());
+                return res;
+            }
+        }
+
+        // 5. Prefer the local prompt/LLM path for general conversation and as a fallback for web search failures.
         if (shouldPreferLocalPromptBeforeWeb(normalizedInput)) {
             String llmReply = askLocalLLM(normalizedInput);
             if (llmReply != null) {
@@ -166,10 +179,41 @@ public class Chatbot {
         return cleaned.trim();
     }
 
+    public static boolean shouldAttemptWebSearch(String input, boolean webSearchEnabled) {
+        if (!webSearchEnabled || input == null) return false;
+        String normalized = normalizeTextStatic(input);
+        if (normalized.isEmpty()) return false;
+
+        if (normalized.contains("search the web") || normalized.contains("search web") || normalized.contains("browse the web") || normalized.contains("browse web")) {
+            return true;
+        }
+
+        if (normalized.contains("look up") || normalized.contains("lookup") || normalized.contains("find me") || normalized.contains("find out")) {
+            return true;
+        }
+
+        // Prefer local prompt handling for generic informational questions.
+        // Use web search only for explicit lookup/search intent.
+        //if (normalized.startsWith("what is ") || normalized.startsWith("what are ") || normalized.startsWith("who is ") || normalized.startsWith("who are ")) {
+        //    return true;
+        //}
+
+        if (normalized.contains("can you tell me about") || normalized.contains("tell me about") || normalized.contains("explain")) {
+            return true;
+        }
+
+        if (normalized.contains("latest news") || normalized.contains("current weather") || normalized.contains("today") || normalized.contains("now")) {
+            return true;
+        }
+
+        return false;
+    }
+
     public static boolean shouldPreferLocalPromptBeforeWeb(String input) {
         if (input == null) return false;
         String normalized = normalizeTextStatic(input);
-        return !normalized.isEmpty();
+        if (normalized.isEmpty()) return false;
+        return !shouldAttemptWebSearch(normalized, true);
     }
 
     private static String normalizeTextStatic(String input) {
@@ -178,6 +222,10 @@ public class Chatbot {
         normalized = normalized.replaceAll("\\p{M}+", "");
         normalized = normalized.replaceAll("[^\\p{L}\\p{N} ]", " ");
         return normalized.toLowerCase(Locale.ROOT).trim();
+    }
+
+    private boolean isWebSearchEnabled() {
+        return db != null ? Boolean.parseBoolean(db.getParameter("web_search_enabled", "true")) : true;
     }
 
     private String normalizeText(String input) {
@@ -270,13 +318,17 @@ public class Chatbot {
         return null;
     }
 
+    private URL createUrl(String urlString) throws Exception {
+        return URI.create(urlString).toURL();
+    }
+
     private String fetchFromWikipedia(String query) {
         HttpURLConnection conn = null;
         try {
             String urlStr = "https://en.wikipedia.org/api/rest_v1/page/summary/" +
                     URLEncoder.encode(query.replace(" ", "_"), StandardCharsets.UTF_8.name());
 
-            URL url = new URL(urlStr);
+            URL url = createUrl(urlStr);
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(5000);
@@ -308,7 +360,7 @@ public class Chatbot {
                     URLEncoder.encode(query, StandardCharsets.UTF_8.name()) +
                     "&format=json&no_html=1&skip_disambig=1";
 
-            URL url = new URL(urlStr);
+            URL url = createUrl(urlStr);
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(5000);
@@ -353,7 +405,7 @@ public class Chatbot {
     private String askLocalLLM(String prompt) {
         HttpURLConnection conn = null;
         try {
-            URL url = new URL("http://localhost:11434/api/generate");
+            URL url = createUrl("http://localhost:11434/api/generate");
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");

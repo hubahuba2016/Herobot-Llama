@@ -9,7 +9,7 @@ import android.database.Cursor;
 public class DBHelper extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "chatbot.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     public static final String TABLE = "chatbot";
     public static final String COL_Q = "question";
@@ -55,6 +55,10 @@ public class DBHelper extends SQLiteOpenHelper {
         insertOrUpdateParameter(db, "temperature", "0.7");
         insertOrUpdateParameter(db, "top_p", "0.9");
         insertOrUpdateParameter(db, "stream", "false");
+        insertOrUpdateParameter(db, "web_search_enabled", "true");
+        insertOrUpdateParameter(db, "search_engine", "duckduckgo");
+        insertOrUpdateParameter(db, "search_country", "us");
+        insertOrUpdateParameter(db, "max_web_results", "3");
     }
 
     private void insertOrUpdateParameter(SQLiteDatabase db, String key, String value) {
