@@ -354,6 +354,11 @@ public class Chatbot {
     }
 
     private String fetchFromWeb(String query) {
+        String wikipediaReply = fetchFromWikipedia(query);
+        if (wikipediaReply != null && !wikipediaReply.isEmpty()) {
+            return wikipediaReply;
+        }
+
         String ddgReply = fetchFromDuckDuckGo(query);
         if (ddgReply != null && !ddgReply.isEmpty()) {
             return ddgReply;
