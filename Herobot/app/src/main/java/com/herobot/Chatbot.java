@@ -136,10 +136,14 @@ public class Chatbot {
         boolean webSearchEnabled = isWebSearchEnabled();
 
         if (shouldAttemptWebSearch(normalizedInput, webSearchEnabled)) {
-            String ddgReply = fetchFromWeb(normalizedInput);
-            if (ddgReply != null) {
-                String cleaned = cleanText(ddgReply);
-                BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
+            WebSearchResult webResult = fetchFromWebWithSource(normalizedInput);
+            if (webResult != null) {
+                String cleaned = cleanText(webResult.text);
+                String replyText = "According to the web: " + cleaned;
+                if ("google".equals(webResult.source)) {
+                    replyText += "\nIf you'd like, you can train the chatbot by typing \"train\".";
+                }
+                BotResponse res = new BotResponse(replyText, BotResponse.Source.WEB);
                 history.add("HeroBot: " + res.getText());
                 return res;
             }
@@ -156,10 +160,14 @@ public class Chatbot {
         }
 
         // 6. Internet Search: DuckDuckGo with Google fallback (General fallback)
-        String webReply = fetchFromWeb(normalizedInput);
-        if (webReply != null) {
-            String cleaned = cleanText(webReply);
-            BotResponse res = new BotResponse("According to the web: " + cleaned, BotResponse.Source.WEB);
+        WebSearchResult webResult = fetchFromWebWithSource(normalizedInput);
+        if (webResult != null) {
+            String cleaned = cleanText(webResult.text);
+            String replyText = "According to the web: " + cleaned;
+            if ("google".equals(webResult.source)) {
+                replyText += "\nIf you'd like, you can train the chatbot by typing \"train\".";
+            }
+            BotResponse res = new BotResponse(replyText, BotResponse.Source.WEB);
             history.add("HeroBot: " + res.getText());
             return res;
         }
@@ -353,28 +361,43 @@ public class Chatbot {
         return null;
     }
 
-    private String fetchFromWeb(String query) {
+    private WebSearchResult fetchFromWebWithSource(String query) {
         String wikipediaReply = fetchFromWikipedia(query);
         if (wikipediaReply != null && !wikipediaReply.isEmpty()) {
-            return wikipediaReply;
+            return new WebSearchResult(wikipediaReply, "wikipedia");
         }
 
         String ddgReply = fetchFromDuckDuckGo(query);
         if (ddgReply != null && !ddgReply.isEmpty()) {
-            return ddgReply;
+            return new WebSearchResult(ddgReply, "duckduckgo");
         }
 
         String searxngReply = fetchFromSearxng(query);
         if (searxngReply != null && !searxngReply.isEmpty()) {
-            return searxngReply;
+            return new WebSearchResult(searxngReply, "searxng");
         }
 
         String googleReply = fetchFromGoogle(query);
         if (googleReply != null && !googleReply.isEmpty()) {
-            return googleReply;
+            return new WebSearchResult(googleReply, "google");
         }
 
         return null;
+    }
+
+    private String fetchFromWeb(String query) {
+        WebSearchResult webResult = fetchFromWebWithSource(query);
+        return webResult != null ? webResult.text : null;
+    }
+
+    private static class WebSearchResult {
+        private final String text;
+        private final String source;
+
+        private WebSearchResult(String text, String source) {
+            this.text = text;
+            this.source = source;
+        }
     }
 
     private String fetchFromDuckDuckGo(String query) {
