@@ -251,7 +251,7 @@ public class Chatbot {
                 "solve", "equation", "algebra", "geometry", "trigonometry",
                 "derivative", "differentiate", "integral", "integrate", "factor",
                 "fraction", "percentage", "probability", "permutation", "combination",
-                "hitung", "matematika", "menghitung", "persamaan", "turunan", "integral"
+                "log", "logarithm", "hitung", "matematika", "menghitung", "persamaan", "turunan", "integral"
         };
         for (String term : mathematicsTerms) {
             if (normalized.contains(term)) return true;
@@ -267,10 +267,12 @@ public class Chatbot {
         if (expression.isEmpty()) return null;
 
         expression = expression.replaceAll("(?i)\\bwhat is\\b|\\bcalculate\\b|\\bcompute\\b|\\bcount\\b|\\bsolve\\b|\\bresult\\b|\\bequals\\b", "");
+        String displayExpression = expression.replaceAll("\\s+", " ").trim();
+        expression = expression.replaceAll("(?i)\\blogarithm\\b|\\blog\\b", "l");
         expression = expression.replaceAll("\\s+", "");
         if (expression.isEmpty()) return null;
 
-        String cleaned = expression.replaceAll("[^0-9+\\-*/%^().]", "");
+        String cleaned = expression.replaceAll("[^0-9+\\-*/%^().l]", "");
         if (cleaned.isEmpty() || !cleaned.matches(".*\\d.*")) return null;
 
         try {
@@ -278,9 +280,9 @@ public class Chatbot {
             if (Double.isNaN(value) || Double.isInfinite(value)) return null;
 
             if (Math.rint(value) == value) {
-                return expression + " = " + (long) value;
+                return displayExpression + " = " + (long) value;
             }
-            return expression + " = " + value;
+            return displayExpression + " = " + value;
         } catch (Exception e) {
             return null;
         }
@@ -339,6 +341,7 @@ public class Chatbot {
     private static int precedence(String operator) {
         switch (operator) {
             case "^": return 4;
+            case "l": return 4;
             case "*":
             case "/":
             case "%": return 3;
@@ -376,6 +379,12 @@ public class Chatbot {
                     stack.push(lhs % rhs);
                     break;
                 case "^": stack.push(Math.pow(lhs, rhs)); break;
+                case "l":
+                    if (lhs <= 0 || lhs == 1 || rhs <= 0) {
+                        throw new IllegalArgumentException("Invalid logarithm");
+                    }
+                    stack.push(Math.log(rhs) / Math.log(lhs));
+                    break;
                 default: throw new IllegalArgumentException("Unsupported operator: " + token);
             }
         }

@@ -28,5 +28,7 @@ public class ChatbotTest {
         assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("explain the derivative of x squared"));
         assertTrue(Chatbot.evaluateArithmeticExpression("1+1").contains("= 2"));
         assertTrue(Chatbot.evaluateArithmeticExpression("3*9").contains("= 27"));
+        assertTrue(Chatbot.isMathematicsRequest("2 log 8"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("2 log 8").contains("= 3"));
     }
 }
