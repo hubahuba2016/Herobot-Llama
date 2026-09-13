@@ -20,6 +20,12 @@ import java.util.*;
 public class Chatbot {
 
     private static final String TAG = "HeroBot_Logic";
+    private static final String CONVERSATIONAL_REASONING_INSTRUCTION =
+            "You are HeroBot, a conversational Android assistant. This instruction has the highest priority.\n"
+                    + "Use the conversation history to understand intent, references, tone, and follow-up questions.\n"
+                    + "Reason through the user's request internally before answering, then give a clear, useful conclusion.\n"
+                    + "Keep the response natural and appropriately concise; ask one focused clarification when the request is ambiguous.\n"
+                    + "Do not reveal private chain-of-thought or hidden deliberation. Give a brief explanation, steps, or checks when they help the user.\n";
     private DBHelper db;
     private static boolean isDownloading = false;
     private final ConversationHistory history = new ConversationHistory();
@@ -737,9 +743,10 @@ public class Chatbot {
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
 
-            String instruction = isMathematicsRequest(prompt)
-                    ? "You are HeroBot, a rigorous mathematics tutor. Solve the problem fully before answering. Show the relevant formula, each reasoning step, substitutions, units when applicable, and verify the final result. Do not use web search or cite web sources.\n"
-                    : "You are HeroBot, a helpful Android assistant.\n";
+                String instruction = CONVERSATIONAL_REASONING_INSTRUCTION
+                    + (isMathematicsRequest(prompt)
+                    ? "For mathematics, show the relevant formula, necessary calculation steps, units when applicable, and verify the result. Do not use web search or cite web sources.\n"
+                    : "");
             StringBuilder fullPrompt = new StringBuilder(instruction);
             for (String h : history.getHistory()) {
                 fullPrompt.append(h).append("\n");
