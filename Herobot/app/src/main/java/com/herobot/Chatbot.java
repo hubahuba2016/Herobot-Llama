@@ -135,6 +135,23 @@ public class Chatbot {
 
         boolean webSearchEnabled = isWebSearchEnabled();
 
+        String arithmeticAnswer = evaluateArithmeticExpression(input);
+        if (arithmeticAnswer != null) {
+            BotResponse res = new BotResponse(arithmeticAnswer, BotResponse.Source.LLM);
+            history.add("HeroBot: " + res.getText());
+            return res;
+        }
+
+        // Mathematical questions are solved locally first so web results do not replace reasoning.
+        if (isMathematicsRequest(input)) {
+            String llmReply = askLocalLLM(input);
+            if (llmReply != null) {
+                BotResponse res = new BotResponse(llmReply, BotResponse.Source.LLM);
+                history.add("HeroBot: " + res.getText());
+                return res;
+            }
+        }
+
         if (shouldAttemptWebSearch(normalizedInput, webSearchEnabled)) {
             WebSearchResult webResult = fetchFromWebWithSource(normalizedInput);
             if (webResult != null) {
@@ -217,11 +234,157 @@ public class Chatbot {
         return false;
     }
 
+    public static boolean isMathematicsRequest(String input) {
+        if (input == null) return false;
+
+        String normalized = normalizeTextStatic(input);
+        if (normalized.isEmpty()) return false;
+
+        String[] mathematicsTerms = {
+                "calculate", "calculation", "compute", "math", "mathematics",
+                "solve", "equation", "algebra", "geometry", "trigonometry",
+                "derivative", "differentiate", "integral", "integrate", "factor",
+                "fraction", "percentage", "probability", "permutation", "combination",
+                "hitung", "matematika", "menghitung", "persamaan", "turunan", "integral"
+        };
+        for (String term : mathematicsTerms) {
+            if (normalized.contains(term)) return true;
+        }
+
+        return input.matches(".*\\d.*(?:[+*/^=]|[-]).*");
+    }
+
+    public static String evaluateArithmeticExpression(String input) {
+        if (input == null) return null;
+
+        String expression = input.trim();
+        if (expression.isEmpty()) return null;
+
+        expression = expression.replaceAll("(?i)\\bwhat is\\b|\\bcalculate\\b|\\bcompute\\b|\\bcount\\b|\\bsolve\\b|\\bresult\\b|\\bequals\\b", "");
+        expression = expression.replaceAll("\\s+", "");
+        if (expression.isEmpty()) return null;
+
+        String cleaned = expression.replaceAll("[^0-9+\\-*/%^().]", "");
+        if (cleaned.isEmpty() || !cleaned.matches(".*\\d.*")) return null;
+
+        try {
+            double value = evaluateRpn(toRpn(cleaned));
+            if (Double.isNaN(value) || Double.isInfinite(value)) return null;
+
+            if (Math.rint(value) == value) {
+                return expression + " = " + (long) value;
+            }
+            return expression + " = " + value;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<String> toRpn(String expression) {
+        List<String> output = new ArrayList<>();
+        Deque<String> operators = new ArrayDeque<>();
+        StringBuilder number = new StringBuilder();
+
+        for (int i = 0; i < expression.length(); i++) {
+            char ch = expression.charAt(i);
+            if (Character.isDigit(ch) || ch == '.') {
+                number.append(ch);
+                continue;
+            }
+
+            if (number.length() > 0) {
+                output.add(number.toString());
+                number.setLength(0);
+            }
+
+            if (Character.isWhitespace(ch)) continue;
+
+            if (ch == '(') {
+                operators.push("(");
+                continue;
+            }
+            if (ch == ')') {
+                while (!operators.isEmpty() && !"(".equals(operators.peek())) {
+                    output.add(operators.pop());
+                }
+                if (!operators.isEmpty()) {
+                    operators.pop();
+                }
+                continue;
+            }
+
+            String op = String.valueOf(ch);
+            while (!operators.isEmpty() && !"(".equals(operators.peek()) && precedence(operators.peek()) >= precedence(op)) {
+                output.add(operators.pop());
+            }
+            operators.push(op);
+        }
+
+        if (number.length() > 0) {
+            output.add(number.toString());
+        }
+        while (!operators.isEmpty()) {
+            output.add(operators.pop());
+        }
+
+        return output;
+    }
+
+    private static int precedence(String operator) {
+        switch (operator) {
+            case "^": return 4;
+            case "*":
+            case "/":
+            case "%": return 3;
+            case "+":
+            case "-": return 2;
+            default: return 0;
+        }
+    }
+
+    private static double evaluateRpn(List<String> tokens) {
+        Deque<Double> stack = new ArrayDeque<>();
+        for (String token : tokens) {
+            if (token.matches("[0-9]+(\\.[0-9]+)?")) {
+                stack.push(Double.parseDouble(token));
+                continue;
+            }
+            if (token.equals("(")) continue;
+
+            if (stack.size() < 2) {
+                throw new IllegalArgumentException("Malformed expression");
+            }
+
+            double rhs = stack.pop();
+            double lhs = stack.pop();
+            switch (token) {
+                case "+": stack.push(lhs + rhs); break;
+                case "-": stack.push(lhs - rhs); break;
+                case "*": stack.push(lhs * rhs); break;
+                case "/":
+                    if (rhs == 0) throw new IllegalArgumentException("Division by zero");
+                    stack.push(lhs / rhs);
+                    break;
+                case "%":
+                    if (rhs == 0) throw new IllegalArgumentException("Division by zero");
+                    stack.push(lhs % rhs);
+                    break;
+                case "^": stack.push(Math.pow(lhs, rhs)); break;
+                default: throw new IllegalArgumentException("Unsupported operator: " + token);
+            }
+        }
+
+        if (stack.size() != 1) {
+            throw new IllegalArgumentException("Malformed expression");
+        }
+        return stack.pop();
+    }
+
     public static boolean shouldPreferLocalPromptBeforeWeb(String input) {
         if (input == null) return false;
         String normalized = normalizeTextStatic(input);
         if (normalized.isEmpty()) return false;
-        return !shouldAttemptWebSearch(normalized, true);
+        return isMathematicsRequest(input) || !shouldAttemptWebSearch(normalized, true);
     }
 
     private static String normalizeTextStatic(String input) {
@@ -574,11 +737,14 @@ public class Chatbot {
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
 
-            // Build context-aware prompt using conversation history
-            StringBuilder fullPrompt = new StringBuilder("You are HeroBot, a helpful Android assistant.\n");
+            String instruction = isMathematicsRequest(prompt)
+                    ? "You are HeroBot, a rigorous mathematics tutor. Solve the problem fully before answering. Show the relevant formula, each reasoning step, substitutions, units when applicable, and verify the final result. Do not use web search or cite web sources.\n"
+                    : "You are HeroBot, a helpful Android assistant.\n";
+            StringBuilder fullPrompt = new StringBuilder(instruction);
             for (String h : history.getHistory()) {
                 fullPrompt.append(h).append("\n");
             }
+            fullPrompt.append("User's current request: ").append(prompt).append("\n");
             fullPrompt.append("HeroBot:");
 
             String model = db != null ? db.getParameter("model", "llama3.2:1b") : "llama3.2:1b";

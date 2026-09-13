@@ -19,4 +19,14 @@ public class ChatbotTest {
         assertFalse(Chatbot.shouldAttemptWebSearch("hello there", false));
         assertFalse(Chatbot.shouldAttemptWebSearch("what is a chatbot", false));
     }
+
+    @Test
+    public void mathematicsRequestsShouldBeHandledLocallyBeforeWebSearch() {
+        assertTrue(Chatbot.isMathematicsRequest("solve 2x + 5 = 15"));
+        assertTrue(Chatbot.isMathematicsRequest("calculate 15 percent of 240"));
+        assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("solve 2x + 5 = 15"));
+        assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("explain the derivative of x squared"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("1+1").contains("= 2"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("3*9").contains("= 27"));
+    }
 }
