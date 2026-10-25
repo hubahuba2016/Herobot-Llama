@@ -86,6 +86,22 @@ public class Chatbot {
             return new BotResponse("I base my answers on the knowledge and sources I have access to.", BotResponse.Source.SYSTEM);
         }
 
+        String equationAnswer = solveLinearEquation(input);
+        if (equationAnswer != null) {
+            BotResponse res = new BotResponse(equationAnswer, BotResponse.Source.LLM);
+            history.add("HeroBot: " + res.getText());
+            return res;
+        }
+
+        if (normalizedInput.contains("variable")) {
+            String variableExplanation = explainMathConcept(normalizedInput);
+            if (variableExplanation != null) {
+                BotResponse res = new BotResponse(variableExplanation, BotResponse.Source.LLM);
+                history.add("HeroBot: " + res.getText());
+                return res;
+            }
+        }
+
         // 1. Exact match from DB
         String dbAnswer = null;
         if (db != null) {
@@ -141,9 +157,23 @@ public class Chatbot {
 
         boolean webSearchEnabled = isWebSearchEnabled();
 
+        String trigonometricAnswer = evaluateTrigonometricExpression(input);
+        if (trigonometricAnswer != null) {
+            BotResponse res = new BotResponse(trigonometricAnswer, BotResponse.Source.LLM);
+            history.add("HeroBot: " + res.getText());
+            return res;
+        }
+
         String arithmeticAnswer = evaluateArithmeticExpression(input);
         if (arithmeticAnswer != null) {
             BotResponse res = new BotResponse(arithmeticAnswer, BotResponse.Source.LLM);
+            history.add("HeroBot: " + res.getText());
+            return res;
+        }
+
+        String mathConceptAnswer = explainMathConcept(normalizedInput);
+        if (mathConceptAnswer != null) {
+            BotResponse res = new BotResponse(mathConceptAnswer, BotResponse.Source.LLM);
             history.add("HeroBot: " + res.getText());
             return res;
         }
@@ -251,13 +281,278 @@ public class Chatbot {
                 "solve", "equation", "algebra", "geometry", "trigonometry",
                 "derivative", "differentiate", "integral", "integrate", "factor",
                 "fraction", "percentage", "probability", "permutation", "combination",
-                "log", "logarithm", "hitung", "matematika", "menghitung", "persamaan", "turunan", "integral"
+                "log", "logarithm", "sine", "cosine", "tangent", "sin", "cos", "tan",
+                "infinity", "infinite", "hitung", "matematika", "menghitung", "persamaan", "turunan", "integral"
         };
         for (String term : mathematicsTerms) {
             if (normalized.contains(term)) return true;
         }
 
         return input.matches(".*\\d.*(?:[+*/^=]|[-]).*");
+    }
+
+    public static String explainMathConcept(String input) {
+        if (input == null) return null;
+
+        String normalized = normalizeTextStatic(input);
+        if (normalized.isEmpty()) return null;
+
+        if (normalized.contains("sine") || normalized.contains("sin ") || normalized.contains("sin(")) {
+            return "Sine (sin) is the ratio of the opposite side to the hypotenuse in a right triangle. For a 30° angle, sin(30°) = 0.5.";
+        }
+        if (normalized.contains("cosine") || normalized.contains("cos ") || normalized.contains("cos(")) {
+            return "Cosine (cos) is the ratio of the adjacent side to the hypotenuse in a right triangle. For a 60° angle, cos(60°) = 0.5.";
+        }
+        if (normalized.contains("tangent") || normalized.contains("tan ") || normalized.contains("tan(")) {
+            return "Tangent (tan) is the ratio of the opposite side to the adjacent side. For a 45° angle, tan(45°) = 1.";
+        }
+        if (normalized.contains("infinity") || normalized.contains("infinite")) {
+            return "Infinity is a concept meaning a quantity without bound or end. It is not a regular finite number, and in math it is often used to describe limits like 1/x as x approaches 0 or values that grow without stopping.";
+        }
+        if (normalized.contains("variable")) {
+            return "A variable is a symbol, often a letter like x, that represents a value that can change or that we need to find. For example, in 2x + 5 = 15, solving for x gives x = 5.";
+        }
+
+        return null;
+    }
+
+    public static String solveLinearEquation(String input) {
+        if (input == null || input.trim().isEmpty()) return null;
+
+        String equation = input.trim().replaceFirst(
+                "(?i)^\\s*(?:please\\s+)?(?:solve\\s+for\\s+[a-z]\\s*:?\\s*|find\\s+[a-z]\\s*:?\\s*|(?:solve|find|calculate|what\\s+is)\\s+)",
+                ""
+        );
+        String[] sides = equation.split("=", -1);
+        if (sides.length != 2) return null;
+
+        try {
+            LinearExpressionParser leftParser = new LinearExpressionParser(sides[0]);
+            LinearValue left = leftParser.parse();
+            LinearExpressionParser rightParser = new LinearExpressionParser(sides[1]);
+            LinearValue right = rightParser.parse();
+
+            String variable = leftParser.getVariable();
+            if (variable != null && rightParser.getVariable() != null
+                    && !variable.equalsIgnoreCase(rightParser.getVariable())) {
+                return null;
+            }
+            if (variable == null) variable = rightParser.getVariable();
+            if (variable == null) return null;
+
+            double coefficient = left.coefficient - right.coefficient;
+            double constant = right.constant - left.constant;
+            if (Math.abs(coefficient) < 1e-12) {
+                return Math.abs(constant) < 1e-12
+                        ? "Every value of " + variable + " is a solution."
+                        : "This equation has no solution.";
+            }
+            return variable + " = " + formatValue(constant / coefficient);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static final class LinearValue {
+        private final double coefficient;
+        private final double constant;
+
+        private LinearValue(double coefficient, double constant) {
+            this.coefficient = coefficient;
+            this.constant = constant;
+        }
+    }
+
+    private static final class LinearExpressionParser {
+        private final String expression;
+        private int position;
+        private String variable;
+
+        private LinearExpressionParser(String expression) {
+            this.expression = expression;
+        }
+
+        private String getVariable() {
+            return variable;
+        }
+
+        private LinearValue parse() {
+            LinearValue value = parseSum();
+            skipWhitespace();
+            if (position != expression.length()) {
+                throw new IllegalArgumentException("Unexpected input");
+            }
+            return value;
+        }
+
+        private LinearValue parseSum() {
+            LinearValue value = parseProduct();
+            while (true) {
+                skipWhitespace();
+                if (consume('+')) {
+                    value = add(value, parseProduct(), 1);
+                } else if (consume('-')) {
+                    value = add(value, parseProduct(), -1);
+                } else {
+                    return value;
+                }
+            }
+        }
+
+        private LinearValue parseProduct() {
+            LinearValue value = parseUnary();
+            while (true) {
+                skipWhitespace();
+                if (consume('*')) {
+                    value = multiply(value, parseUnary());
+                } else if (consume('/')) {
+                    LinearValue denominator = parseUnary();
+                    if (Math.abs(denominator.coefficient) >= 1e-12
+                            || Math.abs(denominator.constant) < 1e-12) {
+                        throw new IllegalArgumentException("Unsupported division");
+                    }
+                    value = new LinearValue(
+                            value.coefficient / denominator.constant,
+                            value.constant / denominator.constant
+                    );
+                } else if (startsPrimary()) {
+                    value = multiply(value, parseUnary());
+                } else {
+                    return value;
+                }
+            }
+        }
+
+        private LinearValue parseUnary() {
+            skipWhitespace();
+            if (consume('+')) return parseUnary();
+            if (consume('-')) {
+                LinearValue value = parseUnary();
+                return new LinearValue(-value.coefficient, -value.constant);
+            }
+            return parsePrimary();
+        }
+
+        private LinearValue parsePrimary() {
+            skipWhitespace();
+            if (consume('(')) {
+                LinearValue value = parseSum();
+                skipWhitespace();
+                if (!consume(')')) throw new IllegalArgumentException("Unclosed parenthesis");
+                return value;
+            }
+
+            if (position < expression.length()
+                    && (Character.isDigit(expression.charAt(position)) || expression.charAt(position) == '.')) {
+                return parseNumber();
+            }
+
+            if (position < expression.length() && Character.isLetter(expression.charAt(position))) {
+                int start = position++;
+                while (position < expression.length() && Character.isLetter(expression.charAt(position))) {
+                    position++;
+                }
+                String name = expression.substring(start, position).toLowerCase(Locale.ROOT);
+                if (variable != null && !variable.equals(name)) {
+                    throw new IllegalArgumentException("Multiple variables");
+                }
+                variable = name;
+                return new LinearValue(1, 0);
+            }
+
+            throw new IllegalArgumentException("Expected a number, variable, or parenthesis");
+        }
+
+        private LinearValue parseNumber() {
+            int start = position;
+            boolean hasDigit = false;
+            while (position < expression.length()
+                    && (Character.isDigit(expression.charAt(position)) || expression.charAt(position) == '.')) {
+                if (Character.isDigit(expression.charAt(position))) hasDigit = true;
+                position++;
+            }
+            if (!hasDigit) throw new IllegalArgumentException("Invalid number");
+            double value = Double.parseDouble(expression.substring(start, position));
+            return new LinearValue(0, value);
+        }
+
+        private static LinearValue add(LinearValue left, LinearValue right, int sign) {
+            return new LinearValue(
+                    left.coefficient + sign * right.coefficient,
+                    left.constant + sign * right.constant
+            );
+        }
+
+        private static LinearValue multiply(LinearValue left, LinearValue right) {
+            if (Math.abs(left.coefficient) >= 1e-12 && Math.abs(right.coefficient) >= 1e-12) {
+                throw new IllegalArgumentException("Nonlinear expression");
+            }
+            return new LinearValue(
+                    left.coefficient * right.constant + right.coefficient * left.constant,
+                    left.constant * right.constant
+            );
+        }
+
+        private boolean startsPrimary() {
+            if (position >= expression.length()) return false;
+            char next = expression.charAt(position);
+            return Character.isLetterOrDigit(next) || next == '.' || next == '(';
+        }
+
+        private boolean consume(char expected) {
+            if (position < expression.length() && expression.charAt(position) == expected) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        private void skipWhitespace() {
+            while (position < expression.length() && Character.isWhitespace(expression.charAt(position))) {
+                position++;
+            }
+        }
+    }
+
+    public static String evaluateTrigonometricExpression(String input) {
+        if (input == null) return null;
+
+        String normalized = normalizeTextStatic(input);
+        if (normalized.isEmpty()) return null;
+
+        String[] trigPatterns = {"sin", "cos", "tan"};
+        for (String trig : trigPatterns) {
+            if (!normalized.contains(trig)) continue;
+            String valuePart = normalized.replace(trig, "").replaceAll("[^0-9.()\\-+/ ]", "").trim();
+            if (valuePart.isEmpty()) return null;
+            Double degrees = parseDegrees(valuePart);
+            if (degrees == null) return null;
+            double radians = Math.toRadians(degrees);
+            double result;
+            if (trig.equals("sin")) result = Math.sin(radians);
+            else if (trig.equals("cos")) result = Math.cos(radians);
+            else result = Math.tan(radians);
+            return trig.toUpperCase() + "(" + degrees + "°) = " + formatValue(result);
+        }
+
+        return null;
+    }
+
+    private static Double parseDegrees(String value) {
+        if (value == null || value.isEmpty()) return null;
+        String cleaned = value.replaceAll("[^0-9.\\-+ ]", "").trim();
+        if (cleaned.isEmpty()) return null;
+        try {
+            return Double.parseDouble(cleaned);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String formatValue(double value) {
+        if (Math.abs(value) < 1e-12) return "0";
+        if (Math.rint(value) == value) return String.format(Locale.US, "%.0f", value);
+        return String.format(Locale.US, "%.6f", value).replaceAll("\\.?0+$", "");
     }
 
     public static String evaluateArithmeticExpression(String input) {

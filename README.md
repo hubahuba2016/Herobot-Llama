@@ -15,6 +15,7 @@ The goal of Herobot-Llama is to provide a simple, fast, and extensible open-sour
 * 🦙 Powered by **Llama 3.2 1B** via **Ollama**
 * ☕ Built entirely in **Java**
 * 🌐 Internet search for real-time information
+* 🧮 Local arithmetic, trigonometry, and single-variable linear equation solving
 * 💬 Interactive chatbot interface
 * ⚡ Lightweight and efficient
 * 💻 Runs locally on your computer
@@ -33,6 +34,7 @@ Running AI locally provides several advantages:
 * Full control over your AI assistant
 
 Herobot-Llama combines the power of a local LLM with Internet search, allowing it to answer both general and current-event questions.
+It can also explain what mathematical variables are and solve linear equations such as `2x + 5 = 15`.
 
 ---
 
