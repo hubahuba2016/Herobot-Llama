@@ -16,6 +16,8 @@ import java.net.URLEncoder;
 import java.io.InputStreamReader;
 import java.text.Normalizer;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Chatbot {
 
@@ -558,14 +560,24 @@ public class Chatbot {
     public static String evaluateArithmeticExpression(String input) {
         if (input == null) return null;
 
-        String expression = input.trim();
-        if (expression.isEmpty()) return null;
+        String trimmed = input.trim();
+        if (trimmed.isEmpty()) return null;
 
+        String expression = trimmed;
         expression = expression.replaceAll("(?i)\\bwhat is\\b|\\bcalculate\\b|\\bcompute\\b|\\bcount\\b|\\bsolve\\b|\\bresult\\b|\\bequals\\b", "");
         String displayExpression = expression.replaceAll("\\s+", " ").trim();
         expression = expression.replaceAll("(?i)\\blogarithm\\b|\\blog\\b", "l");
         expression = expression.replaceAll("\\s+", "");
+
         if (expression.isEmpty()) return null;
+
+        Matcher percentMatcher = Pattern.compile("(?i)(\\d+(?:\\.\\d+)?)\\s*(?:%|percent)\\s*(?:of)?\\s*(\\d+(?:\\.\\d+)?)?").matcher(expression);
+        if (percentMatcher.matches()) {
+            double value = Double.parseDouble(percentMatcher.group(1));
+            double base = percentMatcher.group(2) == null ? 100 : Double.parseDouble(percentMatcher.group(2));
+            double result = (value / 100.0) * base;
+            return displayExpression + " = " + formatValue(result);
+        }
 
         String cleaned = expression.replaceAll("[^0-9+\\-*/%^().l]", "");
         if (cleaned.isEmpty() || !cleaned.matches(".*\\d.*")) return null;
@@ -574,10 +586,7 @@ public class Chatbot {
             double value = evaluateRpn(toRpn(cleaned));
             if (Double.isNaN(value) || Double.isInfinite(value)) return null;
 
-            if (Math.rint(value) == value) {
-                return displayExpression + " = " + (long) value;
-            }
-            return displayExpression + " = " + value;
+            return displayExpression + " = " + formatValue(value);
         } catch (Exception e) {
             return null;
         }
