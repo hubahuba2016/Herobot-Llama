@@ -28,6 +28,10 @@ public class ChatbotTest {
         assertTrue(Chatbot.shouldPreferLocalPromptBeforeWeb("explain the derivative of x squared"));
         assertTrue(Chatbot.evaluateArithmeticExpression("1+1").contains("= 2"));
         assertTrue(Chatbot.evaluateArithmeticExpression("3*9").contains("= 27"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("3×9").contains("= 27"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("2*-3").contains("= -6"));
+        assertTrue(Chatbot.evaluateArithmeticExpression("-3*2").contains("= -6"));
+        assertTrue(Chatbot.isMathematicsRequest("3×9"));
         assertTrue(Chatbot.isMathematicsRequest("2 log 8"));
         assertTrue(Chatbot.evaluateArithmeticExpression("2 log 8").contains("= 3"));
         assertTrue(Chatbot.evaluateTrigonometricExpression("sin 30").contains("0.5"));
@@ -40,6 +44,7 @@ public class ChatbotTest {
     public void linearEquationsWithVariablesShouldBeSolvedLocally() {
         assertTrue(Chatbot.solveLinearEquation("solve 2x + 5 = 15").equals("x = 5"));
         assertTrue(Chatbot.solveLinearEquation("find x: 3 * (x - 2) = 9").equals("x = 5"));
+        assertTrue(Chatbot.solveLinearEquation("find x: 3 × (x - 2) = 9").equals("x = 5"));
         assertTrue(Chatbot.solveLinearEquation("4 = 2y").equals("y = 2"));
         assertTrue(Chatbot.solveLinearEquation("x / 2 + 3 = 7").equals("x = 8"));
     }

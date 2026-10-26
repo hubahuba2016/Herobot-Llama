@@ -290,7 +290,7 @@ public class Chatbot {
             if (normalized.contains(term)) return true;
         }
 
-        return input.matches(".*\\d.*(?:[+*/^=]|[-]).*");
+        return input.matches(".*\\d.*(?:[+*/×^=]|[-]).*");
     }
 
     public static String explainMathConcept(String input) {
@@ -325,6 +325,7 @@ public class Chatbot {
                 "(?i)^\\s*(?:please\\s+)?(?:solve\\s+for\\s+[a-z]\\s*:?\\s*|find\\s+[a-z]\\s*:?\\s*|(?:solve|find|calculate|what\\s+is)\\s+)",
                 ""
         );
+        equation = equation.replace('×', '*');
         String[] sides = equation.split("=", -1);
         if (sides.length != 2) return null;
 
@@ -566,6 +567,7 @@ public class Chatbot {
         String expression = trimmed;
         expression = expression.replaceAll("(?i)\\bwhat is\\b|\\bcalculate\\b|\\bcompute\\b|\\bcount\\b|\\bsolve\\b|\\bresult\\b|\\bequals\\b", "");
         String displayExpression = expression.replaceAll("\\s+", " ").trim();
+        expression = expression.replace('×', '*');
         expression = expression.replaceAll("(?i)\\blogarithm\\b|\\blog\\b", "l");
         expression = expression.replaceAll("\\s+", "");
 
@@ -611,6 +613,15 @@ public class Chatbot {
 
             if (Character.isWhitespace(ch)) continue;
 
+            if (isUnaryOperator(expression, i)) {
+                String op = ch == '-' ? "u-" : "u+";
+                while (!operators.isEmpty() && !"(".equals(operators.peek()) && precedence(operators.peek()) >= precedence(op)) {
+                    output.add(operators.pop());
+                }
+                operators.push(op);
+                continue;
+            }
+
             if (ch == '(') {
                 operators.push("(");
                 continue;
@@ -642,10 +653,27 @@ public class Chatbot {
         return output;
     }
 
+    private static boolean isUnaryOperator(String expression, int index) {
+        char ch = expression.charAt(index);
+        if (ch != '+' && ch != '-') return false;
+        if (index == 0) return true;
+
+        int previousIndex = index - 1;
+        while (previousIndex >= 0 && Character.isWhitespace(expression.charAt(previousIndex))) {
+            previousIndex--;
+        }
+        if (previousIndex < 0) return true;
+
+        char previous = expression.charAt(previousIndex);
+        return previous == '(' || previous == '+' || previous == '-' || previous == '*' || previous == '/' || previous == '%' || previous == '^' || previous == 'l';
+    }
+
     private static int precedence(String operator) {
         switch (operator) {
-            case "^": return 4;
-            case "l": return 4;
+            case "^":
+            case "l": return 5;
+            case "u-":
+            case "u+": return 4;
             case "*":
             case "/":
             case "%": return 3;
@@ -658,11 +686,20 @@ public class Chatbot {
     private static double evaluateRpn(List<String> tokens) {
         Deque<Double> stack = new ArrayDeque<>();
         for (String token : tokens) {
-            if (token.matches("[0-9]+(\\.[0-9]+)?")) {
+            if (token.matches("(?:\\d+\\.\\d*|\\d*\\.\\d+|\\d+)") || token.matches("[0-9]+(\\.[0-9]+)?")) {
                 stack.push(Double.parseDouble(token));
                 continue;
             }
             if (token.equals("(")) continue;
+            if ("u-".equals(token)) {
+                if (stack.isEmpty()) throw new IllegalArgumentException("Malformed expression");
+                stack.push(-stack.pop());
+                continue;
+            }
+            if ("u+".equals(token)) {
+                if (stack.isEmpty()) throw new IllegalArgumentException("Malformed expression");
+                continue;
+            }
 
             if (stack.size() < 2) {
                 throw new IllegalArgumentException("Malformed expression");
