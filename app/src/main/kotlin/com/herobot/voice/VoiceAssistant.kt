@@ -34,9 +34,15 @@ class VoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun speak(text: String) {
-        if (ttsReady && tts != null && text.isNotBlank()) {
+        val spokenText = sanitizeForSpeech(text)
+        if (ttsReady && tts != null && spokenText.isNotBlank()) {
             try {
-                tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "herobot_${System.currentTimeMillis()}")
+                tts?.speak(
+                    spokenText,
+                    TextToSpeech.QUEUE_FLUSH,
+                    null,
+                    "herobot_${System.currentTimeMillis()}"
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to speak: ${e.message}")
             }
@@ -64,6 +70,32 @@ class VoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
 
     companion object {
         private const val TAG = "VoiceAssistant"
+
+        private val MARKDOWN_LINK_REGEX = Regex("\\[([^\\]]+)]\\([^)]+\\)")
+        private val CODE_FENCE_REGEX = Regex("```[a-zA-Z0-9_-]*")
+        private val BLOCKQUOTE_PREFIX_REGEX = Regex("(?m)^\\s*>+\\s*")
+        private val SILENT_SYMBOLS_REGEX = Regex("[*#\$`~|•]+")
+        private val DASH_AND_UNDERSCORE_REGEX = Regex("[-_]+")
+        private val MULTI_SPACE_REGEX = Regex("[ \\t]{2,}")
+        private val MULTI_NEWLINE_REGEX = Regex("\\n{2,}")
+
+        /**
+         * Strips Markdown and formatting symbols (*, #, $, -, `, ~, |, •, >)
+         * so TextToSpeech reads natural words instead of symbol names.
+         */
+        fun sanitizeForSpeech(text: String): String {
+            if (text.isBlank()) return ""
+            var cleaned = MARKDOWN_LINK_REGEX.replace(text, "$1")
+            cleaned = CODE_FENCE_REGEX.replace(cleaned, " ")
+            cleaned = BLOCKQUOTE_PREFIX_REGEX.replace(cleaned, "")
+            cleaned = SILENT_SYMBOLS_REGEX.replace(cleaned, "")
+            cleaned = DASH_AND_UNDERSCORE_REGEX.replace(cleaned, " ")
+            cleaned = cleaned.lines()
+                .map { MULTI_SPACE_REGEX.replace(it, " ").trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+            return MULTI_NEWLINE_REGEX.replace(cleaned, "\n").trim()
+        }
 
         fun createSpeechInputIntent(): Intent {
             return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {

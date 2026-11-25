@@ -14,6 +14,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentHashMap
 
 enum class AssistantRole(
     val shortLabel: String,
@@ -77,13 +78,30 @@ sealed interface ReasoningSelection {
 }
 
 sealed interface GeminiStreamEvent {
-    data class Started(val role: AssistantRole) : GeminiStreamEvent
-    data class Chunk(val accumulatedText: String, val role: AssistantRole) : GeminiStreamEvent
-    data class Completed(val fullText: String, val role: AssistantRole) : GeminiStreamEvent
+    data class Started(val role: AssistantRole, val modelName: String) : GeminiStreamEvent
+    data class Chunk(
+        val accumulatedText: String,
+        val role: AssistantRole,
+        val modelName: String
+    ) : GeminiStreamEvent
+
+    data class Completed(
+        val fullText: String,
+        val role: AssistantRole,
+        val modelName: String
+    ) : GeminiStreamEvent
+
     data class Error(val message: String) : GeminiStreamEvent
 }
 
 object GeminiModelRouter {
+
+    private val AUTO_FALLBACK_CHAIN = listOf(
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite"
+    )
 
     private val DEEP_REASONING_KEYWORDS = listOf(
         "why", "how does", "how do", "prove", "proof", "derive", "analyze",
@@ -132,32 +150,48 @@ object GeminiModelRouter {
 
         return AssistantRole.GENERAL
     }
+
+    /**
+     * Builds an ordered list of candidate models for [role].
+     * In Auto mode, skips models known to be quota-exhausted in this session and falls back
+     * through free-tier-available models so conversational reasoning continues seamlessly.
+     */
+    fun resolveCandidateModels(
+        role: AssistantRole,
+        selection: ReasoningSelection,
+        exhaustedModels: Set<String> = emptySet()
+    ): List<String> {
+        if (selection is ReasoningSelection.Fixed) {
+            return listOf(role.modelName)
+        }
+
+        val ordered = LinkedHashSet<String>().apply {
+            add(role.modelName)
+            addAll(AUTO_FALLBACK_CHAIN)
+        }.toList()
+
+        val available = ordered.filter { it !in exhaustedModels }
+        return available.ifEmpty { ordered }
+    }
 }
 
 class GeminiChatService {
 
-    private val generalModel: GenerativeModel by lazy { createModel(AssistantRole.GENERAL) }
-    private val deepReasoningModel: GenerativeModel by lazy { createModel(AssistantRole.DEEP_REASONING) }
-    private val interactiveModel: GenerativeModel by lazy { createModel(AssistantRole.INTERACTIVE) }
-    private val fastModel: GenerativeModel by lazy { createModel(AssistantRole.FAST) }
+    private val modelCache = ConcurrentHashMap<Pair<AssistantRole, String>, GenerativeModel>()
+    private val quotaExhaustedModels = ConcurrentHashMap.newKeySet<String>()
 
     private val conversationHistory = mutableListOf<Content>()
     private val learnedMemories = mutableListOf<Pair<String, String>>()
 
-    private fun createModel(role: AssistantRole): GenerativeModel {
-        return Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
-            modelName = role.modelName,
-            systemInstruction = content(role = "system") {
-                text(role.systemInstruction)
-            }
-        )
-    }
-
-    private fun modelFor(role: AssistantRole): GenerativeModel = when (role) {
-        AssistantRole.GENERAL -> generalModel
-        AssistantRole.DEEP_REASONING -> deepReasoningModel
-        AssistantRole.INTERACTIVE -> interactiveModel
-        AssistantRole.FAST -> fastModel
+    private fun getOrCreateModel(role: AssistantRole, modelName: String): GenerativeModel {
+        return modelCache.getOrPut(role to modelName) {
+            Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
+                modelName = modelName,
+                systemInstruction = content(role = "system") {
+                    text(role.systemInstruction)
+                }
+            )
+        }
     }
 
     fun recordLearnedFact(question: String, answer: String) {
@@ -174,54 +208,120 @@ class GeminiChatService {
         localHint: String? = null
     ): Flow<GeminiStreamEvent> = flow {
         val role = GeminiModelRouter.resolveRole(userPrompt, selection)
-        emit(GeminiStreamEvent.Started(role))
-
+        val candidates = GeminiModelRouter.resolveCandidateModels(
+            role = role,
+            selection = selection,
+            exhaustedModels = quotaExhaustedModels
+        )
         val effectivePrompt = buildEffectivePrompt(userPrompt, localHint)
-        val model = modelFor(role)
-        val chat = model.startChat(history = conversationHistory.toList())
-        val accumulatedText = StringBuilder()
 
-        try {
-            withTimeout(TIMEOUT_MILLIS) {
-                chat.sendMessageStream(effectivePrompt).collect { chunk ->
-                    val chunkText = chunk.text.orEmpty()
-                    if (chunkText.isNotEmpty()) {
-                        accumulatedText.append(chunkText)
-                        emit(GeminiStreamEvent.Chunk(accumulatedText.toString(), role))
+        var lastError: String? = null
+
+        for (candidateModel in candidates) {
+            emit(GeminiStreamEvent.Started(role, candidateModel))
+            val model = getOrCreateModel(role, candidateModel)
+            val chat = model.startChat(history = conversationHistory.toList())
+            val accumulatedText = StringBuilder()
+
+            try {
+                withTimeout(TIMEOUT_MILLIS) {
+                    chat.sendMessageStream(effectivePrompt).collect { chunk ->
+                        val chunkText = chunk.text.orEmpty()
+                        if (chunkText.isNotEmpty()) {
+                            accumulatedText.append(chunkText)
+                            emit(
+                                GeminiStreamEvent.Chunk(
+                                    accumulatedText = accumulatedText.toString(),
+                                    role = role,
+                                    modelName = candidateModel
+                                )
+                            )
+                        }
                     }
                 }
-            }
 
-            val finalText = accumulatedText.toString().trim()
-            if (finalText.isNotEmpty()) {
-                conversationHistory.add(content(role = "user") { text(userPrompt) })
-                conversationHistory.add(content(role = "model") { text(finalText) })
-                if (conversationHistory.size > MAX_HISTORY_CONTENTS) {
-                    repeat(conversationHistory.size - MAX_HISTORY_CONTENTS) {
-                        conversationHistory.removeAt(0)
+                val finalText = accumulatedText.toString().trim()
+                if (finalText.isNotEmpty()) {
+                    conversationHistory.add(content(role = "user") { text(userPrompt) })
+                    conversationHistory.add(content(role = "model") { text(finalText) })
+                    if (conversationHistory.size > MAX_HISTORY_CONTENTS) {
+                        repeat(conversationHistory.size - MAX_HISTORY_CONTENTS) {
+                            conversationHistory.removeAt(0)
+                        }
                     }
+                    emit(GeminiStreamEvent.Completed(finalText, role, candidateModel))
+                    return@flow
+                } else {
+                    lastError = "Gemini returned an empty response. Please try again."
                 }
-                emit(GeminiStreamEvent.Completed(finalText, role))
-            } else {
-                emit(GeminiStreamEvent.Error("Gemini returned an empty response. Please try again."))
-            }
-        } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini chat generation timed out after ${TIMEOUT_MILLIS}ms", e)
-            emit(
-                GeminiStreamEvent.Error(
-                    "Response timed out after 60 seconds. Try switching to Fast mode or retrying."
-                )
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Gemini chat generation failed for model ${role.modelName}", e)
-            emit(
-                GeminiStreamEvent.Error(
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "Gemini chat generation timed out on $candidateModel", e)
+                lastError = "Response timed out after 60 seconds. Try switching to Fast mode or retrying."
+                if (selection is ReasoningSelection.Fixed || accumulatedText.isNotEmpty()) {
+                    emit(GeminiStreamEvent.Error(lastError))
+                    return@flow
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Gemini chat generation failed on $candidateModel", e)
+                val errorText = buildErrorChainText(e)
+                val canFallback = selection is ReasoningSelection.Auto &&
+                    accumulatedText.isEmpty() &&
+                    isQuotaOrModelAvailabilityError(errorText)
+
+                if (isQuotaOrModelAvailabilityError(errorText)) {
+                    quotaExhaustedModels.add(candidateModel)
+                }
+
+                if (canFallback) {
+                    Log.w(TAG, "Model $candidateModel unavailable/quota-exceeded; trying next available model.")
+                    lastError = e.localizedMessage ?: "Quota exceeded on $candidateModel."
+                    continue
+                }
+
+                val displayMessage = if (selection is ReasoningSelection.Fixed &&
+                    isQuotaOrModelAvailabilityError(errorText)
+                ) {
+                    "${e.localizedMessage ?: "Quota exceeded for $candidateModel."} Switch to Auto Route to use a model with available quota."
+                } else {
                     e.localizedMessage ?: "Failed to generate response from Gemini."
-                )
-            )
+                }
+                emit(GeminiStreamEvent.Error(displayMessage))
+                return@flow
+            }
         }
+
+        emit(
+            GeminiStreamEvent.Error(
+                lastError ?: "All available Gemini models reached quota limits. Please try again shortly."
+            )
+        )
+    }
+
+    private fun isQuotaOrModelAvailabilityError(errorText: String): Boolean {
+        val lower = errorText.lowercase()
+        return lower.contains("quota") ||
+            lower.contains("resource_exhausted") ||
+            lower.contains("resource exhausted") ||
+            lower.contains("429") ||
+            lower.contains("rate limit") ||
+            lower.contains("billing") ||
+            lower.contains("not found") ||
+            lower.contains("404") ||
+            lower.contains("not supported")
+    }
+
+    private fun buildErrorChainText(throwable: Throwable): String {
+        val sb = StringBuilder()
+        var current: Throwable? = throwable
+        var depth = 0
+        while (current != null && depth < 6) {
+            current.message?.let { sb.append(it).append(' ') }
+            current = current.cause
+            depth++
+        }
+        return sb.toString()
     }
 
     private fun buildEffectivePrompt(userPrompt: String, localHint: String?): String {

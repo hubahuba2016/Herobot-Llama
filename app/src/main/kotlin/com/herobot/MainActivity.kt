@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,18 +24,6 @@ class MainActivity : ComponentActivity() {
     private val viewModel: ChatViewModel by viewModels()
     private lateinit var voiceAssistant: VoiceAssistant
 
-    private val speechRecognizerLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            val spoken = matches?.firstOrNull()?.trim()
-            if (!spoken.isNullOrEmpty()) {
-                viewModel.submitInput(spoken)
-            }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -48,6 +37,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             HeroBotTheme {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+                val speechRecognizerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK) {
+                        val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                        val spoken = matches?.firstOrNull()?.trim()
+                        if (!spoken.isNullOrEmpty()) {
+                            viewModel.submitInput(spoken)
+                        }
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     viewModel.ttsEvents.collect { text ->

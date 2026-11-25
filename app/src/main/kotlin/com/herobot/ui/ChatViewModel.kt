@@ -34,6 +34,7 @@ data class ChatUiState(
     val useGeminiReasoning: Boolean = true,
     val reasoningSelection: ReasoningSelection = ReasoningSelection.Auto,
     val activeRole: AssistantRole = AssistantRole.GENERAL,
+    val activeModelName: String = AssistantRole.GENERAL.modelName,
     val errorMessage: String? = null,
     val lastFailedPrompt: String? = null,
     val showTrainDialog: Boolean = false,
@@ -133,6 +134,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 },
                 isProcessing = true,
                 activeRole = resolvedRole,
+                activeModelName = resolvedRole.modelName,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
@@ -153,7 +155,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ).collect { event ->
                 when (event) {
                     is GeminiStreamEvent.Started -> {
-                        _uiState.update { it.copy(activeRole = event.role) }
+                        _uiState.update { state ->
+                            val updated = state.messages.map { msg ->
+                                if (msg.id == placeholderBotMessage.id) {
+                                    msg.copy(
+                                        modelId = event.modelName,
+                                        roleTitle = event.role.title
+                                    )
+                                } else {
+                                    msg
+                                }
+                            }
+                            state.copy(
+                                messages = updated,
+                                activeRole = event.role,
+                                activeModelName = event.modelName
+                            )
+                        }
                     }
 
                     is GeminiStreamEvent.Chunk -> {
@@ -162,7 +180,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 if (msg.id == placeholderBotMessage.id) {
                                     msg.copy(
                                         text = event.accumulatedText,
-                                        modelId = event.role.modelName,
+                                        modelId = event.modelName,
                                         roleTitle = event.role.title,
                                         isStreaming = true
                                     )
@@ -170,7 +188,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     msg
                                 }
                             }
-                            state.copy(messages = updated)
+                            state.copy(
+                                messages = updated,
+                                activeRole = event.role,
+                                activeModelName = event.modelName
+                            )
                         }
                     }
 
@@ -180,7 +202,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 if (msg.id == placeholderBotMessage.id) {
                                     msg.copy(
                                         text = event.fullText,
-                                        modelId = event.role.modelName,
+                                        modelId = event.modelName,
                                         roleTitle = event.role.title,
                                         isStreaming = false
                                     )
@@ -191,6 +213,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             state.copy(
                                 messages = updated,
                                 isProcessing = false,
+                                activeRole = event.role,
+                                activeModelName = event.modelName,
                                 errorMessage = null,
                                 lastFailedPrompt = null
                             )
@@ -273,6 +297,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             state.copy(
                 reasoningSelection = selection,
                 activeRole = previewRole,
+                activeModelName = previewRole.modelName,
                 useGeminiReasoning = true
             )
         }

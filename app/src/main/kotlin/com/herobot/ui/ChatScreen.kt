@@ -175,7 +175,7 @@ fun ChatScreen(
                                 Text(
                                     text = when {
                                         uiState.isSeeding -> "Loading knowledge base…"
-                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeRole.modelName}"
+                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeModelName}"
                                         else -> "Local Engine • ${uiState.knowledgeCount} Q&A pairs"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
@@ -356,7 +356,7 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (uiState.useGeminiReasoning) {
-                                "${uiState.activeRole.title} (${uiState.activeRole.modelName}) is reasoning…"
+                                "${uiState.activeRole.title} (${uiState.activeModelName}) is reasoning…"
                             } else {
                                 "HeroBot is thinking…"
                             },

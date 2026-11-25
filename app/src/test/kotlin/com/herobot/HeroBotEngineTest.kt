@@ -7,6 +7,7 @@ import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
 import com.herobot.engine.WebSearchService
+import com.herobot.voice.VoiceAssistant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -133,5 +134,28 @@ class HeroBotEngineTest {
             ReasoningSelection.Fixed(AssistantRole.DEEP_REASONING)
         )
         assertEquals(AssistantRole.DEEP_REASONING, fixedRole)
+
+        val fallbackCandidates = GeminiModelRouter.resolveCandidateModels(
+            role = AssistantRole.DEEP_REASONING,
+            selection = ReasoningSelection.Auto,
+            exhaustedModels = setOf("gemini-4-carbon")
+        )
+        assertFalse(fallbackCandidates.contains("gemini-4-carbon"))
+        assertEquals("gemini-4-hydrogen", fallbackCandidates.first())
+        assertTrue(fallbackCandidates.contains("gemini-3.8-flash"))
+        assertTrue(fallbackCandidates.contains("gemini-3.5-flash-lite"))
+    }
+
+    @Test
+    fun voiceAssistantSanitizesSymbolsBeforeSpeaking() {
+        val raw = "### Step-by-Step\n* **Solve** \$2x + 5 = 15\$\n- Answer: `x = 5`\n---"
+        val spoken = VoiceAssistant.sanitizeForSpeech(raw)
+
+        assertFalse(spoken.contains("*"))
+        assertFalse(spoken.contains("#"))
+        assertFalse(spoken.contains("$"))
+        assertFalse(spoken.contains("-"))
+        assertFalse(spoken.contains("`"))
+        assertEquals("Step by Step\nSolve 2x + 5 = 15\nAnswer: x = 5", spoken)
     }
 }
