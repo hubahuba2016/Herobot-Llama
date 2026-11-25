@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -38,13 +40,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +60,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -71,19 +79,20 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.herobot.R
+import com.herobot.ai.AssistantRole
+import com.herobot.ai.ReasoningSelection
 import com.herobot.ui.components.ChatMessageRow
 import com.herobot.ui.components.ParametersDialog
 import com.herobot.ui.components.TrainBotDialog
 
 private val STARTER_PROMPTS = listOf(
-    "Hello!",
-    "Solve 2x + 5 = 15",
-    "sin 30",
-    "What is Kotlin?",
-    "Tell me a joke",
-    "Search the web for Mount Everest"
+    "Why does the sky appear blue? Explain step by step",
+    "Solve 2x + 5 = 15 and explain each step",
+    "Help me design an offline-first Android app",
+    "Compare Kotlin Coroutines vs Flows"
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -92,6 +101,10 @@ fun ChatScreen(
     uiState: ChatUiState,
     onSendInput: (String) -> Unit,
     onVoiceInputClick: () -> Unit,
+    onSelectReasoningMode: (ReasoningSelection) -> Unit,
+    onToggleGeminiReasoning: (Boolean) -> Unit,
+    onRetryError: () -> Unit,
+    onDismissError: () -> Unit,
     onToggleTts: () -> Unit,
     onOpenTrainDialog: () -> Unit,
     onDismissTrainDialog: () -> Unit,
@@ -104,7 +117,8 @@ fun ChatScreen(
     var inputText by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.messages.size) {
+    val lastMessageLength = uiState.messages.lastOrNull()?.text?.length ?: 0
+    LaunchedEffect(uiState.messages.size, lastMessageLength) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
         }
@@ -119,7 +133,9 @@ fun ChatScreen(
 
     if (uiState.showParametersDialog) {
         ParametersDialog(
+            useGeminiReasoning = uiState.useGeminiReasoning,
             parameters = uiState.parameters,
+            onToggleGeminiReasoning = onToggleGeminiReasoning,
             onUpdateParameter = onUpdateParameter,
             onDismiss = onDismissParametersDialog
         )
@@ -129,89 +145,101 @@ fun ChatScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                ),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            painter = painterResource(id = R.drawable.img_herobot_avatar),
-                            contentDescription = "HeroBot logo",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
-                                    CircleShape
+            Column {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Image(
+                                painter = painterResource(id = R.drawable.img_herobot_avatar),
+                                contentDescription = "HeroBot logo",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
+                                        CircleShape
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = stringResource(R.string.app_name),
+                                    style = MaterialTheme.typography.titleLarge
                                 )
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = stringResource(R.string.app_name),
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                            Text(
-                                text = if (uiState.isSeeding) {
-                                    "Loading knowledge base…"
-                                } else {
-                                    "${uiState.knowledgeCount} Q&A pairs • Math • Web"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                                Text(
+                                    text = when {
+                                        uiState.isSeeding -> "Loading knowledge base…"
+                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeRole.modelName}"
+                                        else -> "Local Engine • ${uiState.knowledgeCount} Q&A pairs"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = onToggleTts,
-                        modifier = Modifier.testTag("tts_toggle_button")
-                    ) {
-                        Icon(
-                            imageVector = if (uiState.isTtsEnabled) {
-                                Icons.AutoMirrored.Rounded.VolumeUp
-                            } else {
-                                Icons.AutoMirrored.Rounded.VolumeOff
-                            },
-                            contentDescription = stringResource(R.string.tts_toggle_cd)
-                        )
-                    }
-                    IconButton(
-                        onClick = onOpenTrainDialog,
-                        modifier = Modifier.testTag("train_action_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Psychology,
-                            contentDescription = stringResource(R.string.train_action_cd)
-                        )
-                    }
-                    IconButton(
-                        onClick = onOpenParametersDialog,
-                        modifier = Modifier.testTag("settings_action_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = stringResource(R.string.settings_action_cd)
-                        )
-                    }
-                    if (uiState.messages.isNotEmpty()) {
+                    },
+                    actions = {
                         IconButton(
-                            onClick = onClearChat,
-                            modifier = Modifier.testTag("clear_chat_button")
+                            onClick = onToggleTts,
+                            modifier = Modifier.testTag("tts_toggle_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.DeleteOutline,
-                                contentDescription = "Clear conversation"
+                                imageVector = if (uiState.isTtsEnabled) {
+                                    Icons.AutoMirrored.Rounded.VolumeUp
+                                } else {
+                                    Icons.AutoMirrored.Rounded.VolumeOff
+                                },
+                                contentDescription = stringResource(R.string.tts_toggle_cd)
                             )
                         }
+                        IconButton(
+                            onClick = onOpenTrainDialog,
+                            modifier = Modifier.testTag("train_action_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Psychology,
+                                contentDescription = stringResource(R.string.train_action_cd)
+                            )
+                        }
+                        IconButton(
+                            onClick = onOpenParametersDialog,
+                            modifier = Modifier.testTag("settings_action_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Tune,
+                                contentDescription = stringResource(R.string.settings_action_cd)
+                            )
+                        }
+                        if (uiState.messages.isNotEmpty()) {
+                            IconButton(
+                                onClick = onClearChat,
+                                modifier = Modifier.testTag("clear_chat_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Clear conversation"
+                                )
+                            }
+                        }
                     }
+                )
+
+                if (uiState.useGeminiReasoning) {
+                    RoleSelectorBar(
+                        selection = uiState.reasoningSelection,
+                        onSelect = onSelectReasoningMode
+                    )
                 }
-            )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+            }
         }
     ) { innerPadding ->
         Box(
@@ -232,9 +260,9 @@ fun ChatScreen(
                 ) {
                     if (uiState.messages.isEmpty()) {
                         EmptyChatWelcome(
-                            onPromptClick = { prompt ->
-                                onSendInput(prompt)
-                            },
+                            activeRole = uiState.activeRole,
+                            isAuto = uiState.reasoningSelection is ReasoningSelection.Auto,
+                            onPromptClick = onSendInput,
                             modifier = Modifier.align(Alignment.Center)
                         )
                     } else {
@@ -250,6 +278,61 @@ fun ChatScreen(
                                 key = { it.id }
                             ) { message ->
                                 ChatMessageRow(message = message)
+                            }
+                        }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = uiState.errorMessage != null,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    uiState.errorMessage?.let { errorMsg ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .testTag("error_banner")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ErrorOutline,
+                                    contentDescription = "Error",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = errorMsg,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (uiState.lastFailedPrompt != null) {
+                                    TextButton(
+                                        onClick = onRetryError,
+                                        modifier = Modifier.testTag("retry_error_button")
+                                    ) {
+                                        Text("Retry")
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onDismissError,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Dismiss error",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -272,7 +355,11 @@ fun ChatScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "HeroBot is thinking…",
+                            text = if (uiState.useGeminiReasoning) {
+                                "${uiState.activeRole.title} (${uiState.activeRole.modelName}) is reasoning…"
+                            } else {
+                                "HeroBot is thinking…"
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -382,9 +469,62 @@ fun ChatScreen(
     }
 }
 
+@Composable
+private fun RoleSelectorBar(
+    selection: ReasoningSelection,
+    onSelect: (ReasoningSelection) -> Unit
+) {
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            FilterChip(
+                selected = selection is ReasoningSelection.Auto,
+                onClick = { onSelect(ReasoningSelection.Auto) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                label = {
+                    Text(
+                        text = "Auto Route",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                },
+                modifier = Modifier.testTag("role_chip_auto")
+            )
+
+            AssistantRole.entries.forEach { role ->
+                val isSelected = selection is ReasoningSelection.Fixed && selection.role == role
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelect(ReasoningSelection.Fixed(role)) },
+                    label = {
+                        Text(
+                            text = "${role.shortLabel} (${role.modelName.removePrefix("gemini-")})",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    },
+                    modifier = Modifier.testTag("role_chip_${role.name.lowercase()}")
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EmptyChatWelcome(
+    activeRole: AssistantRole,
+    isAuto: Boolean,
     onPromptClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -405,13 +545,17 @@ private fun EmptyChatWelcome(
         )
         Spacer(modifier = Modifier.height(14.dp))
         Text(
-            text = "Meet HeroBot",
+            text = "HeroBot Reasoning Chat",
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Ask questions in English or Indonesian, solve equations, search the web, or long-press Send to teach new answers.",
+            text = if (isAuto) {
+                "Multi-turn conversation with automatic model routing across Carbon (deep reasoning), Neon (complex interactive), Hydrogen (general), and Flash-Lite (fast)."
+            } else {
+                "${activeRole.title} (${activeRole.modelName}): ${activeRole.description}"
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center

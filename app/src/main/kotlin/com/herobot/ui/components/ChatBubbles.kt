@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -67,7 +68,7 @@ fun ChatMessageRow(
 
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-            modifier = Modifier.widthIn(max = 310.dp)
+            modifier = Modifier.widthIn(max = 320.dp)
         ) {
             val bubbleShape = if (isUser) {
                 RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
@@ -105,6 +106,22 @@ fun ChatMessageRow(
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                     )
+                } else if (message.text.isBlank() && message.isStreaming) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Reasoning…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 } else {
                     val linkColor = MaterialTheme.colorScheme.primary
                     val annotatedText = remember(message.text, linkColor) {
@@ -140,6 +157,8 @@ fun ChatMessageRow(
             if (!isUser && message.source != null) {
                 SourceBadge(
                     source = message.source,
+                    modelId = message.modelId,
+                    roleTitle = message.roleTitle,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp)
                 )
             }
@@ -150,17 +169,31 @@ fun ChatMessageRow(
 @Composable
 private fun SourceBadge(
     source: BotResponse.Source,
+    modelId: String?,
+    roleTitle: String?,
     modifier: Modifier = Modifier
 ) {
     val (bgColor, textColor) = when (source) {
-        BotResponse.Source.DATABASE -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f) to
+        BotResponse.Source.GEMINI -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f) to
             MaterialTheme.colorScheme.onPrimaryContainer
-        BotResponse.Source.WEB -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f) to
+        BotResponse.Source.DATABASE -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f) to
+            MaterialTheme.colorScheme.onSecondaryContainer
+        BotResponse.Source.WEB -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f) to
             MaterialTheme.colorScheme.onSecondaryContainer
         BotResponse.Source.LLM -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.8f) to
             MaterialTheme.colorScheme.onTertiaryContainer
         BotResponse.Source.SYSTEM, BotResponse.Source.NONE ->
             MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    val labelText = buildString {
+        append(source.label)
+        if (!roleTitle.isNullOrBlank()) {
+            append(" • ").append(roleTitle)
+        }
+        if (!modelId.isNullOrBlank()) {
+            append(" (").append(modelId).append(')')
+        }
     }
 
     Box(
@@ -171,7 +204,7 @@ private fun SourceBadge(
             .testTag("message_source_badge")
     ) {
         Text(
-            text = "Source: ${source.label}",
+            text = labelText,
             style = MaterialTheme.typography.labelSmall,
             color = textColor
         )

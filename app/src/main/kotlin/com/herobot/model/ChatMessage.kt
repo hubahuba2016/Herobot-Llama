@@ -7,6 +7,9 @@ data class ChatMessage(
     val text: String,
     val type: Type,
     val source: BotResponse.Source? = null,
+    val modelId: String? = null,
+    val roleTitle: String? = null,
+    val isStreaming: Boolean = false,
     val timestampMillis: Long = System.currentTimeMillis()
 ) {
     enum class Type {

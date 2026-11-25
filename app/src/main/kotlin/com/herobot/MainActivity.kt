@@ -12,6 +12,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.herobot.ai.configureAppCheck
 import com.herobot.ui.ChatScreen
 import com.herobot.ui.ChatViewModel
 import com.herobot.ui.theme.HeroBotTheme
@@ -36,6 +37,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Configure App Check with launch intent before any UI, ViewModels, or Firebase calls
+        configureAppCheck(this, intent)
+
         enableEdgeToEdge()
 
         voiceAssistant = VoiceAssistant(this)
@@ -76,6 +81,10 @@ class MainActivity : ComponentActivity() {
                             ).show()
                         }
                     },
+                    onSelectReasoningMode = viewModel::selectReasoningMode,
+                    onToggleGeminiReasoning = viewModel::setUseGeminiReasoning,
+                    onRetryError = viewModel::retryLastFailedPrompt,
+                    onDismissError = viewModel::dismissError,
                     onToggleTts = viewModel::toggleTts,
                     onOpenTrainDialog = viewModel::openTrainDialog,
                     onDismissTrainDialog = viewModel::dismissTrainDialog,

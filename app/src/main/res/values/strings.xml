@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">HeroBot</string>
-    <string name="assistant_subtitle">Local NLP • Math • Web • Ollama</string>
+    <string name="assistant_subtitle">Gemini Reasoning • Local NLP • Math</string>
     <string name="input_placeholder">Ask anything, solve math, or type "train"…</string>
     <string name="send_cd">Send message (long press to train)</string>
     <string name="voice_cd">Voice input</string>

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -24,10 +25,15 @@ import com.herobot.data.DBHelper
 
 @Composable
 fun ParametersDialog(
+    useGeminiReasoning: Boolean,
     parameters: Map<String, String>,
+    onToggleGeminiReasoning: (Boolean) -> Unit,
     onUpdateParameter: (key: String, value: String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var geminiEnabled by remember(useGeminiReasoning) {
+        mutableStateOf(useGeminiReasoning)
+    }
     var webSearchEnabled by remember(parameters) {
         mutableStateOf(parameters[DBHelper.KEY_WEB_SEARCH_ENABLED]?.toBooleanStrictOrNull() ?: true)
     }
@@ -55,11 +61,36 @@ fun ParametersDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Web Search Fallback",
+                            text = "Gemini Conversational Reasoning",
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Query Wikipedia, DuckDuckGo & SearxNG",
+                            text = "Multi-turn history & role-based models",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = geminiEnabled,
+                        onCheckedChange = { geminiEnabled = it },
+                        modifier = Modifier.testTag("gemini_reasoning_switch")
+                    )
+                }
+
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Local Web Search Fallback",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Used when Gemini mode is off",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -74,7 +105,7 @@ fun ParametersDialog(
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it },
-                    label = { Text("Ollama Model") },
+                    label = { Text("Local Ollama Model") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -84,7 +115,7 @@ fun ParametersDialog(
                 OutlinedTextField(
                     value = temperature,
                     onValueChange = { temperature = it },
-                    label = { Text("Temperature (0.0 – 1.0)") },
+                    label = { Text("Local Temperature (0.0 – 1.0)") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -95,6 +126,7 @@ fun ParametersDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    onToggleGeminiReasoning(geminiEnabled)
                     onUpdateParameter(DBHelper.KEY_WEB_SEARCH_ENABLED, webSearchEnabled.toString())
                     if (model.isNotBlank()) {
                         onUpdateParameter(DBHelper.KEY_MODEL, model.trim())

@@ -1,5 +1,8 @@
 package com.herobot
 
+import com.herobot.ai.AssistantRole
+import com.herobot.ai.GeminiModelRouter
+import com.herobot.ai.ReasoningSelection
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
@@ -96,5 +99,39 @@ class HeroBotEngineTest {
     fun shouldPreferLocalPromptBeforeWebLookup() {
         assertTrue(ChatbotEngine.shouldPreferLocalPromptBeforeWeb("what is java"))
         assertTrue(ChatbotEngine.shouldPreferLocalPromptBeforeWeb("hello there"))
+    }
+
+    @Test
+    fun geminiRouterSelectsExpectedModelsAndRoles() {
+        val deepRole = GeminiModelRouter.resolveRole(
+            "Why does 2x + 5 = 15 solve to 5? Prove it step by step.",
+            ReasoningSelection.Auto
+        )
+        assertEquals(AssistantRole.DEEP_REASONING, deepRole)
+        assertEquals("gemini-4-carbon", deepRole.modelName)
+
+        val interactiveRole = GeminiModelRouter.resolveRole(
+            "Help me design and architect a multi-screen Kotlin Compose app.",
+            ReasoningSelection.Auto
+        )
+        assertEquals(AssistantRole.INTERACTIVE, interactiveRole)
+        assertEquals("gemini-4-neon", interactiveRole.modelName)
+
+        val fastRole = GeminiModelRouter.resolveRole("hello", ReasoningSelection.Auto)
+        assertEquals(AssistantRole.FAST, fastRole)
+        assertEquals("gemini-3.1-flash-lite", fastRole.modelName)
+
+        val generalRole = GeminiModelRouter.resolveRole(
+            "Tell me an interesting story about space exploration today.",
+            ReasoningSelection.Auto
+        )
+        assertEquals(AssistantRole.GENERAL, generalRole)
+        assertEquals("gemini-4-hydrogen", generalRole.modelName)
+
+        val fixedRole = GeminiModelRouter.resolveRole(
+            "hello",
+            ReasoningSelection.Fixed(AssistantRole.DEEP_REASONING)
+        )
+        assertEquals(AssistantRole.DEEP_REASONING, fixedRole)
     }
 }

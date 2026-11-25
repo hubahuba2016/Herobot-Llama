@@ -8,6 +8,7 @@ data class BotResponse(
     val source: Source
 ) {
     enum class Source(val label: String) {
+        GEMINI("Gemini"),
         DATABASE("Database"),
         WEB("Web"),
         LLM("LLM"),
