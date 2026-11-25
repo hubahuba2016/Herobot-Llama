@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HeroBot</string>
+    <string name="assistant_subtitle">Local NLP • Math • Web • Ollama</string>
+    <string name="input_placeholder">Ask anything, solve math, or type "train"…</string>
+    <string name="send_cd">Send message (long press to train)</string>
+    <string name="voice_cd">Voice input</string>
+    <string name="train_title">Train HeroBot</string>
+    <string name="train_question_label">User Question</string>
+    <string name="train_answer_label">Bot Answer</string>
+    <string name="train_save">Save</string>
+    <string name="train_cancel">Cancel</string>
+    <string name="train_fields_required">Both question and answer are required</string>
+    <string name="train_format_error">Error in format. Use \'train: Question | Answer\'</string>
+    <string name="train_success_msg">System: HeroBot has learned a new response.</string>
+    <string name="voice_unavailable">Speech recognition is not available on this device</string>
+    <string name="tts_toggle_cd">Toggle voice replies</string>
+    <string name="train_action_cd">Train HeroBot</string>
+    <string name="settings_action_cd">Bot parameters</string>
+</resources>

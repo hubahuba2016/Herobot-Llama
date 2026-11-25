@@ -1,0 +1,6 @@
+{
+  "name": "HeroBot",
+  "description": "Conversational Android assistant with local SQLite Q&A training, NLP similarity matching, linear & trigonometric math solver, web search, voice input/TTS, and local Ollama LLM support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
