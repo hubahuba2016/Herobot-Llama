@@ -40,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -84,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import com.herobot.R
 import com.herobot.ai.AssistantRole
 import com.herobot.ai.ReasoningSelection
+import com.herobot.ui.components.AccountDialog
 import com.herobot.ui.components.ChatMessageRow
 import com.herobot.ui.components.ParametersDialog
 import com.herobot.ui.components.TrainBotDialog
@@ -112,6 +114,11 @@ fun ChatScreen(
     onOpenParametersDialog: () -> Unit,
     onDismissParametersDialog: () -> Unit,
     onUpdateParameter: (String, String) -> Unit,
+    onOpenAccountDialog: () -> Unit,
+    onDismissAccountDialog: () -> Unit,
+    onSavePersonalApiKey: (String) -> Unit,
+    onClearPersonalApiKey: () -> Unit,
+    onSignOutClick: () -> Unit,
     onClearChat: () -> Unit
 ) {
     var inputText by rememberSaveable { mutableStateOf("") }
@@ -138,6 +145,22 @@ fun ChatScreen(
             onToggleGeminiReasoning = onToggleGeminiReasoning,
             onUpdateParameter = onUpdateParameter,
             onDismiss = onDismissParametersDialog
+        )
+    }
+
+    if (uiState.showAccountDialog) {
+        AccountDialog(
+            displayName = uiState.userDisplayName,
+            email = uiState.userEmail,
+            hasPersonalApiKey = uiState.hasPersonalApiKey,
+            initialApiKey = uiState.personalApiKey,
+            onSaveApiKey = onSavePersonalApiKey,
+            onClearApiKey = onClearPersonalApiKey,
+            onSignOut = {
+                onDismissAccountDialog()
+                onSignOutClick()
+            },
+            onDismiss = onDismissAccountDialog
         )
     }
 
@@ -172,10 +195,11 @@ fun ChatScreen(
                                     text = stringResource(R.string.app_name),
                                     style = MaterialTheme.typography.titleLarge
                                 )
+                                val quotaLabel = if (uiState.hasPersonalApiKey) "Personal Key" else "Shared Quota"
                                 Text(
                                     text = when {
                                         uiState.isSeeding -> "Loading knowledge base…"
-                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeModelName}"
+                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeModelName} • $quotaLabel"
                                         else -> "Local Engine • ${uiState.knowledgeCount} Q&A pairs"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
@@ -187,6 +211,20 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        IconButton(
+                            onClick = onOpenAccountDialog,
+                            modifier = Modifier.testTag("account_action_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AccountCircle,
+                                contentDescription = stringResource(R.string.account_action_cd),
+                                tint = if (uiState.hasPersonalApiKey) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
                         IconButton(
                             onClick = onToggleTts,
                             modifier = Modifier.testTag("tts_toggle_button")
@@ -260,9 +298,12 @@ fun ChatScreen(
                 ) {
                     if (uiState.messages.isEmpty()) {
                         EmptyChatWelcome(
+                            userDisplayName = uiState.userDisplayName,
+                            hasPersonalApiKey = uiState.hasPersonalApiKey,
                             activeRole = uiState.activeRole,
                             isAuto = uiState.reasoningSelection is ReasoningSelection.Auto,
                             onPromptClick = onSendInput,
+                            onOpenAccountDialog = onOpenAccountDialog,
                             modifier = Modifier.align(Alignment.Center)
                         )
                     } else {
@@ -314,6 +355,16 @@ fun ChatScreen(
                                     color = MaterialTheme.colorScheme.onErrorContainer,
                                     modifier = Modifier.weight(1f)
                                 )
+                                if (!uiState.hasPersonalApiKey &&
+                                    errorMsg.contains("quota", ignoreCase = true)
+                                ) {
+                                    TextButton(
+                                        onClick = onOpenAccountDialog,
+                                        modifier = Modifier.testTag("error_add_key_button")
+                                    ) {
+                                        Text("Add Key")
+                                    }
+                                }
                                 if (uiState.lastFailedPrompt != null) {
                                     TextButton(
                                         onClick = onRetryError,
@@ -523,9 +574,12 @@ private fun RoleSelectorBar(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EmptyChatWelcome(
+    userDisplayName: String,
+    hasPersonalApiKey: Boolean,
     activeRole: AssistantRole,
     isAuto: Boolean,
     onPromptClick: (String) -> Unit,
+    onOpenAccountDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -545,14 +599,15 @@ private fun EmptyChatWelcome(
         )
         Spacer(modifier = Modifier.height(14.dp))
         Text(
-            text = "HeroBot Reasoning Chat",
+            text = "Welcome, $userDisplayName",
             style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = if (isAuto) {
-                "Multi-turn conversation with automatic model routing across Carbon (deep reasoning), Neon (complex interactive), Hydrogen (general), and Flash-Lite (fast)."
+                "Your chats & taught Q&A sync to your Google account. Auto Route balances speed and deep reasoning."
             } else {
                 "${activeRole.title} (${activeRole.modelName}): ${activeRole.description}"
             },
@@ -560,7 +615,15 @@ private fun EmptyChatWelcome(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(18.dp))
+        if (!hasPersonalApiKey) {
+            TextButton(
+                onClick = onOpenAccountDialog,
+                modifier = Modifier.testTag("welcome_add_key_button")
+            ) {
+                Text("Optional: Add your own Gemini API key")
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalArrangement = Arrangement.spacedBy(6.dp),

@@ -1,18 +1,22 @@
 package com.herobot.ui
 
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import android.util.Log
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.herobot.R
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.herobot.ai.AssistantRole
 import com.herobot.ai.GeminiChatService
 import com.herobot.ai.GeminiModelRouter
 import com.herobot.ai.GeminiStreamEvent
 import com.herobot.ai.ReasoningSelection
+import com.herobot.data.UserApiKeyStore
+import com.herobot.data.remote.UserChatRepository
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
+import com.herobot.engine.NLPHelper
 import com.herobot.model.BotResponse
 import com.herobot.model.ChatMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -39,22 +44,44 @@ data class ChatUiState(
     val lastFailedPrompt: String? = null,
     val showTrainDialog: Boolean = false,
     val showParametersDialog: Boolean = false,
-    val parameters: Map<String, String> = emptyMap()
+    val showAccountDialog: Boolean = false,
+    val parameters: Map<String, String> = emptyMap(),
+    val userDisplayName: String = "HeroBot User",
+    val userEmail: String? = null,
+    val hasPersonalApiKey: Boolean = false,
+    val personalApiKey: String = ""
 )
 
-class ChatViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val localEngine = ChatbotEngine(
-        application,
-        R.raw.chitchat,
-        R.raw.chatbot_training_data
-    )
+class ChatViewModel(
+    private val localEngine: ChatbotEngine,
+    private val userRepository: UserChatRepository,
+    private val apiKeyStore: UserApiKeyStore,
+    private val currentUserId: String,
+    userDisplayName: String?,
+    userEmail: String?,
+    private val userPhotoUrl: String?
+) : ViewModel() {
 
     private val geminiService = GeminiChatService()
 
     private var activeGenerationJob: Job? = null
+    private var persistedMessages: List<ChatMessage> = emptyList()
+    private var pendingUserMessage: ChatMessage? = null
+    private var streamingBotMessage: ChatMessage? = null
+    private var userLearnedQa: Map<String, String> = emptyMap()
 
-    private val _uiState = MutableStateFlow(ChatUiState())
+    private val initialPersonalKey = apiKeyStore.getPersonalApiKey(currentUserId).orEmpty()
+
+    private val _uiState = MutableStateFlow(
+        ChatUiState(
+            userDisplayName = userDisplayName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: userEmail?.substringBefore('@')?.takeIf { it.isNotEmpty() }
+                ?: "HeroBot User",
+            userEmail = userEmail,
+            hasPersonalApiKey = initialPersonalKey.isNotEmpty(),
+            personalApiKey = initialPersonalKey
+        )
+    )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val _ttsEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -78,6 +105,84 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+
+        viewModelScope.launch {
+            val result = userRepository.ensureUserProfile(
+                userId = currentUserId,
+                displayName = userDisplayName,
+                email = userEmail,
+                photoUrl = userPhotoUrl
+            )
+            result.onFailure { err ->
+                Log.w(TAG, "Profile sync warning: ${err.message}")
+            }
+        }
+
+        observeUserMessages()
+        observeUserLearnedQa()
+    }
+
+    private fun observeUserMessages() {
+        viewModelScope.launch {
+            userRepository.observeMessages(currentUserId)
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val rootError = firestoreError ?: error
+                    Log.w(TAG, "Error observing user messages", rootError)
+                    _uiState.update {
+                        it.copy(errorMessage = rootError.localizedMessage ?: "Failed to sync chat history.")
+                    }
+                }
+                .collect { records ->
+                    persistedMessages = records.map { it.toChatMessage() }
+                    val currentPending = pendingUserMessage
+                    if (currentPending != null && persistedMessages.any {
+                            it.type == ChatMessage.Type.USER &&
+                                it.timestampMillis == currentPending.timestampMillis &&
+                                it.text == currentPending.text
+                        }
+                    ) {
+                        pendingUserMessage = null
+                    }
+                    if (streamingBotMessage == null) {
+                        geminiService.restoreHistory(persistedMessages)
+                    }
+                    refreshVisibleMessages()
+                }
+        }
+    }
+
+    private fun observeUserLearnedQa() {
+        viewModelScope.launch {
+            userRepository.observeLearnedQa(currentUserId)
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val rootError = firestoreError ?: error
+                    Log.w(TAG, "Error observing learned Q&A", rootError)
+                }
+                .collect { records ->
+                    val pairs = records.map { it.question to it.answer }
+                    userLearnedQa = records.associate {
+                        NLPHelper.normalize(it.question) to it.answer
+                    }
+                    geminiService.restoreLearnedFacts(pairs)
+                }
+        }
+    }
+
+    private fun refreshVisibleMessages() {
+        val combined = buildList {
+            addAll(persistedMessages)
+            pendingUserMessage?.let { add(it) }
+            streamingBotMessage?.let { add(it) }
+        }
+        _uiState.update { it.copy(messages = combined) }
     }
 
     fun submitInput(rawInput: String) {
@@ -103,17 +208,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             null
         }
 
+        if (userMessage != null) {
+            pendingUserMessage = userMessage
+            refreshVisibleMessages()
+            viewModelScope.launch {
+                val docId = "u_${userMessage.timestampMillis}_${userMessage.id}"
+                userRepository.saveMessage(currentUserId, docId, userMessage).onFailure { err ->
+                    Log.w(TAG, "Failed to persist user message: ${err.message}")
+                }
+            }
+        }
+
         if (stateSnapshot.useGeminiReasoning) {
-            sendGeminiMessage(trimmed, userMessage, stateSnapshot.reasoningSelection)
+            sendGeminiMessage(
+                prompt = trimmed,
+                selection = stateSnapshot.reasoningSelection,
+                personalApiKey = stateSnapshot.personalApiKey.takeIf { it.isNotBlank() }
+            )
         } else {
-            sendLocalEngineMessage(trimmed, userMessage)
+            sendLocalEngineMessage(trimmed)
         }
     }
 
     private fun sendGeminiMessage(
         prompt: String,
-        userMessage: ChatMessage?,
-        selection: ReasoningSelection
+        selection: ReasoningSelection,
+        personalApiKey: String?
     ) {
         val resolvedRole = GeminiModelRouter.resolveRole(prompt, selection)
         val placeholderBotMessage = ChatMessage(
@@ -125,13 +245,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             isStreaming = true
         )
 
+        streamingBotMessage = placeholderBotMessage
         _uiState.update { state ->
             state.copy(
-                messages = buildList {
-                    addAll(state.messages)
-                    if (userMessage != null) add(userMessage)
-                    add(placeholderBotMessage)
-                },
                 isProcessing = true,
                 activeRole = resolvedRole,
                 activeModelName = resolvedRole.modelName,
@@ -139,6 +255,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 lastFailedPrompt = null
             )
         }
+        refreshVisibleMessages()
 
         activeGenerationJob?.cancel()
         activeGenerationJob = viewModelScope.launch {
@@ -151,67 +268,50 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             geminiService.sendMessageStream(
                 userPrompt = prompt,
                 selection = selection,
-                localHint = localHint
+                localHint = localHint,
+                personalApiKey = personalApiKey
             ).collect { event ->
                 when (event) {
                     is GeminiStreamEvent.Started -> {
+                        streamingBotMessage = streamingBotMessage?.copy(
+                            modelId = event.modelName,
+                            roleTitle = event.role.title
+                        )
                         _uiState.update { state ->
-                            val updated = state.messages.map { msg ->
-                                if (msg.id == placeholderBotMessage.id) {
-                                    msg.copy(
-                                        modelId = event.modelName,
-                                        roleTitle = event.role.title
-                                    )
-                                } else {
-                                    msg
-                                }
-                            }
                             state.copy(
-                                messages = updated,
                                 activeRole = event.role,
                                 activeModelName = event.modelName
                             )
                         }
+                        refreshVisibleMessages()
                     }
 
                     is GeminiStreamEvent.Chunk -> {
+                        streamingBotMessage = streamingBotMessage?.copy(
+                            text = event.accumulatedText,
+                            modelId = event.modelName,
+                            roleTitle = event.role.title,
+                            isStreaming = true
+                        )
                         _uiState.update { state ->
-                            val updated = state.messages.map { msg ->
-                                if (msg.id == placeholderBotMessage.id) {
-                                    msg.copy(
-                                        text = event.accumulatedText,
-                                        modelId = event.modelName,
-                                        roleTitle = event.role.title,
-                                        isStreaming = true
-                                    )
-                                } else {
-                                    msg
-                                }
-                            }
                             state.copy(
-                                messages = updated,
                                 activeRole = event.role,
                                 activeModelName = event.modelName
                             )
                         }
+                        refreshVisibleMessages()
                     }
 
                     is GeminiStreamEvent.Completed -> {
+                        val completedMsg = (streamingBotMessage ?: placeholderBotMessage).copy(
+                            text = event.fullText,
+                            modelId = event.modelName,
+                            roleTitle = event.role.title,
+                            isStreaming = false
+                        )
+                        streamingBotMessage = null
                         _uiState.update { state ->
-                            val updated = state.messages.map { msg ->
-                                if (msg.id == placeholderBotMessage.id) {
-                                    msg.copy(
-                                        text = event.fullText,
-                                        modelId = event.modelName,
-                                        roleTitle = event.role.title,
-                                        isStreaming = false
-                                    )
-                                } else {
-                                    msg
-                                }
-                            }
                             state.copy(
-                                messages = updated,
                                 isProcessing = false,
                                 activeRole = event.role,
                                 activeModelName = event.modelName,
@@ -219,39 +319,45 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 lastFailedPrompt = null
                             )
                         }
+
+                        val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
+                        val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
+                        if (saveResult.isFailure) {
+                            persistedMessages = persistedMessages + completedMsg
+                        }
+                        refreshVisibleMessages()
+
                         if (_uiState.value.isTtsEnabled) {
                             _ttsEvents.tryEmit(event.fullText)
                         }
                     }
 
                     is GeminiStreamEvent.Error -> {
+                        val partial = streamingBotMessage?.takeIf { it.text.isNotBlank() }?.copy(
+                            isStreaming = false
+                        )
+                        streamingBotMessage = null
+                        if (partial != null) {
+                            val docId = "b_${partial.timestampMillis}_${partial.id}"
+                            userRepository.saveMessage(currentUserId, docId, partial)
+                        }
                         _uiState.update { state ->
-                            val cleaned = state.messages.filterNot {
-                                it.id == placeholderBotMessage.id && it.text.isBlank()
-                            }.map { msg ->
-                                if (msg.id == placeholderBotMessage.id) {
-                                    msg.copy(isStreaming = false)
-                                } else {
-                                    msg
-                                }
-                            }
                             state.copy(
-                                messages = cleaned,
                                 isProcessing = false,
                                 errorMessage = event.message,
                                 lastFailedPrompt = prompt
                             )
                         }
+                        refreshVisibleMessages()
                     }
                 }
             }
         }
     }
 
-    private fun sendLocalEngineMessage(prompt: String, userMessage: ChatMessage?) {
+    private fun sendLocalEngineMessage(prompt: String) {
         _uiState.update { state ->
             state.copy(
-                messages = if (userMessage != null) state.messages + userMessage else state.messages,
                 isProcessing = true,
                 errorMessage = null,
                 lastFailedPrompt = null
@@ -259,19 +365,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val response = withContext(Dispatchers.IO) {
-                localEngine.reply(prompt)
+            val userTaughtAnswer = userLearnedQa[NLPHelper.normalize(prompt)]
+            val response = if (userTaughtAnswer != null) {
+                BotResponse(text = userTaughtAnswer, source = BotResponse.Source.DATABASE)
+            } else {
+                withContext(Dispatchers.IO) {
+                    localEngine.reply(prompt)
+                }
             }
+
             val botMessage = ChatMessage(
                 text = response.text,
                 type = ChatMessage.Type.BOT,
                 source = response.source
             )
-            _uiState.update {
-                it.copy(
-                    messages = it.messages + botMessage,
-                    isProcessing = false
-                )
+            _uiState.update { it.copy(isProcessing = false) }
+            val docId = "b_${botMessage.timestampMillis}_${botMessage.id}"
+            val saveResult = userRepository.saveMessage(currentUserId, docId, botMessage)
+            if (saveResult.isFailure) {
+                persistedMessages = persistedMessages + botMessage
+                refreshVisibleMessages()
             }
             if (_uiState.value.isTtsEnabled) {
                 _ttsEvents.tryEmit(response.text)
@@ -320,15 +433,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 localEngine.train(q, a)
             }
             geminiService.recordLearnedFact(q, a)
+            val qaDocId = "qa_${NLPHelper.normalize(q).hashCode().toString().replace('-', 'n')}"
+            userRepository.saveLearnedQa(currentUserId, qaDocId, q, a).onFailure { err ->
+                Log.w(TAG, "Failed to sync learned Q&A to Firestore: ${err.message}")
+            }
+
             val systemText = "System: HeroBot has learned a new response."
             val systemMsg = ChatMessage(
                 text = systemText,
                 type = ChatMessage.Type.BOT,
                 source = BotResponse.Source.SYSTEM
             )
+            val msgDocId = "s_${systemMsg.timestampMillis}_${systemMsg.id}"
+            userRepository.saveMessage(currentUserId, msgDocId, systemMsg)
+
             _uiState.update {
                 it.copy(
-                    messages = it.messages + systemMsg,
                     knowledgeCount = updatedCount,
                     showTrainDialog = false
                 )
@@ -368,6 +488,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showParametersDialog = false) }
     }
 
+    fun openAccountDialog() {
+        _uiState.update { it.copy(showAccountDialog = true) }
+    }
+
+    fun dismissAccountDialog() {
+        _uiState.update { it.copy(showAccountDialog = false) }
+    }
+
+    fun savePersonalApiKey(apiKey: String) {
+        val cleaned = apiKey.trim()
+        apiKeyStore.setPersonalApiKey(currentUserId, cleaned)
+        _uiState.update {
+            it.copy(
+                hasPersonalApiKey = cleaned.isNotEmpty(),
+                personalApiKey = cleaned,
+                errorMessage = null
+            )
+        }
+        if (cleaned.isNotEmpty()) {
+            _toastEvents.tryEmit("Using your personal Gemini API key")
+        }
+    }
+
+    fun clearPersonalApiKey() {
+        apiKeyStore.clearPersonalApiKey(currentUserId)
+        _uiState.update {
+            it.copy(
+                hasPersonalApiKey = false,
+                personalApiKey = "",
+                errorMessage = null
+            )
+        }
+        _toastEvents.tryEmit("Switched back to shared app quota")
+    }
+
     fun updateParameter(key: String, value: String) {
         viewModelScope.launch {
             val updated = withContext(Dispatchers.IO) {
@@ -384,14 +539,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearChat() {
         activeGenerationJob?.cancel()
+        streamingBotMessage = null
+        pendingUserMessage = null
         geminiService.clearHistory()
         _uiState.update {
             it.copy(
-                messages = emptyList(),
                 isProcessing = false,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
         }
+        viewModelScope.launch {
+            userRepository.clearMessages(currentUserId).onFailure { err ->
+                _uiState.update {
+                    it.copy(errorMessage = err.localizedMessage ?: "Failed to clear cloud history.")
+                }
+            }
+        }
+    }
+
+    fun prepareForSignOut() {
+        activeGenerationJob?.cancel()
+        streamingBotMessage = null
+        pendingUserMessage = null
+    }
+
+    companion object {
+        private const val TAG = "ChatVM"
     }
 }

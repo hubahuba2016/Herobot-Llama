@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated HeroBot user profile.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the signed-in user."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name from Google Sign-In."
+        },
+        "email": {
+          "type": "string",
+          "description": "Optional Gmail address from Google Sign-In."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional profile image URL."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "ChatMessageRecord": {
+      "title": "ChatMessageRecord",
+      "description": "Single persisted chat turn belonging to a specific user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "text": {
+          "type": "string",
+          "description": "Message body."
+        },
+        "senderType": {
+          "type": "string",
+          "enum": ["USER", "BOT"],
+          "description": "Originating message role."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["GEMINI", "DATABASE", "WEB", "LLM", "SYSTEM", "NONE"],
+          "description": "Optional response engine source."
+        },
+        "modelId": {
+          "type": "string",
+          "description": "Optional Gemini or local model identifier."
+        },
+        "roleTitle": {
+          "type": "string",
+          "description": "Optional assistant persona role title."
+        },
+        "clientTimestampMillis": {
+          "type": "integer",
+          "description": "Client ordering timestamp in epoch milliseconds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "text", "senderType", "clientTimestampMillis", "createdAt", "updatedAt"]
+    },
+    "LearnedQaRecord": {
+      "title": "LearnedQaRecord",
+      "description": "User-trained custom question and answer pair.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "question": {
+          "type": "string",
+          "description": "Question prompt."
+        },
+        "answer": {
+          "type": "string",
+          "description": "Taught response."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": ["userId", "question", "answer", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile document keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessageRecord" },
+      "description": "User-scoped conversation history messages."
+    },
+    "/users/{userId}/learned_qa/{qaId}": {
+      "schema": { "$ref": "#/entities/LearnedQaRecord" },
+      "description": "User-scoped custom trained Q&A knowledge pairs."
+    }
+  }
+}

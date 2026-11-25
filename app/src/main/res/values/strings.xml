@@ -17,4 +17,7 @@
     <string name="tts_toggle_cd">Toggle voice replies</string>
     <string name="train_action_cd">Train HeroBot</string>
     <string name="settings_action_cd">Bot parameters</string>
+    <string name="account_action_cd">Account and API key settings</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="sign_out">Sign out</string>
 </resources>

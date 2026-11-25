@@ -9,11 +9,21 @@ import com.google.firebase.ai.type.GenerativeBackend
 import com.google.firebase.ai.type.content
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
+import com.herobot.model.ChatMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 
 enum class AssistantRole(
@@ -151,11 +161,6 @@ object GeminiModelRouter {
         return AssistantRole.GENERAL
     }
 
-    /**
-     * Builds an ordered list of candidate models for [role].
-     * In Auto mode, skips models known to be quota-exhausted in this session and falls back
-     * through free-tier-available models so conversational reasoning continues seamlessly.
-     */
     fun resolveCandidateModels(
         role: AssistantRole,
         selection: ReasoningSelection,
@@ -177,10 +182,13 @@ object GeminiModelRouter {
 
 class GeminiChatService {
 
-    private val modelCache = ConcurrentHashMap<Pair<AssistantRole, String>, GenerativeModel>()
-    private val quotaExhaustedModels = ConcurrentHashMap.newKeySet<String>()
+    private data class ChatTurn(val role: String, val text: String)
 
-    private val conversationHistory = mutableListOf<Content>()
+    private val modelCache = ConcurrentHashMap<Pair<AssistantRole, String>, GenerativeModel>()
+    private val quotaExhaustedSharedModels = ConcurrentHashMap.newKeySet<String>()
+    private val quotaExhaustedPersonalModels = ConcurrentHashMap.newKeySet<String>()
+
+    private val historyTurns = mutableListOf<ChatTurn>()
     private val learnedMemories = mutableListOf<Pair<String, String>>()
 
     private fun getOrCreateModel(role: AssistantRole, modelName: String): GenerativeModel {
@@ -195,39 +203,72 @@ class GeminiChatService {
     }
 
     fun recordLearnedFact(question: String, answer: String) {
-        learnedMemories.add(question.trim() to answer.trim())
+        val pair = question.trim() to answer.trim()
+        if (pair.first.isNotEmpty() && pair.second.isNotEmpty() && pair !in learnedMemories) {
+            learnedMemories.add(pair)
+        }
+    }
+
+    fun restoreLearnedFacts(pairs: List<Pair<String, String>>) {
+        learnedMemories.clear()
+        pairs.takeLast(20).forEach { (q, a) ->
+            val trimmedQ = q.trim()
+            val trimmedA = a.trim()
+            if (trimmedQ.isNotEmpty() && trimmedA.isNotEmpty()) {
+                learnedMemories.add(trimmedQ to trimmedA)
+            }
+        }
+    }
+
+    fun restoreHistory(messages: List<ChatMessage>) {
+        historyTurns.clear()
+        messages.filter { !it.isStreaming && it.text.isNotBlank() }
+            .takeLast(MAX_HISTORY_CONTENTS)
+            .forEach { message ->
+                val turnRole = if (message.type == ChatMessage.Type.USER) "user" else "model"
+                historyTurns.add(ChatTurn(turnRole, message.text.trim()))
+            }
     }
 
     fun clearHistory() {
-        conversationHistory.clear()
+        historyTurns.clear()
     }
 
     fun sendMessageStream(
         userPrompt: String,
         selection: ReasoningSelection,
-        localHint: String? = null
+        localHint: String? = null,
+        personalApiKey: String? = null
     ): Flow<GeminiStreamEvent> = flow {
+        val trimmedPersonalKey = personalApiKey?.trim()?.takeIf { it.isNotEmpty() }
+        val usingPersonalKey = trimmedPersonalKey != null
+        val exhaustedSet = if (usingPersonalKey) quotaExhaustedPersonalModels else quotaExhaustedSharedModels
+
         val role = GeminiModelRouter.resolveRole(userPrompt, selection)
         val candidates = GeminiModelRouter.resolveCandidateModels(
             role = role,
             selection = selection,
-            exhaustedModels = quotaExhaustedModels
+            exhaustedModels = exhaustedSet
         )
         val effectivePrompt = buildEffectivePrompt(userPrompt, localHint)
+        val historySnapshot = historyTurns.toList()
 
         var lastError: String? = null
 
         for (candidateModel in candidates) {
             emit(GeminiStreamEvent.Started(role, candidateModel))
-            val model = getOrCreateModel(role, candidateModel)
-            val chat = model.startChat(history = conversationHistory.toList())
             val accumulatedText = StringBuilder()
 
             try {
                 withTimeout(TIMEOUT_MILLIS) {
-                    chat.sendMessageStream(effectivePrompt).collect { chunk ->
-                        val chunkText = chunk.text.orEmpty()
-                        if (chunkText.isNotEmpty()) {
+                    if (trimmedPersonalKey != null) {
+                        streamWithPersonalApiKey(
+                            apiKey = trimmedPersonalKey,
+                            modelName = candidateModel,
+                            systemInstruction = role.systemInstruction,
+                            history = historySnapshot,
+                            userPrompt = effectivePrompt
+                        ) { chunkText ->
                             accumulatedText.append(chunkText)
                             emit(
                                 GeminiStreamEvent.Chunk(
@@ -237,16 +278,35 @@ class GeminiChatService {
                                 )
                             )
                         }
+                    } else {
+                        val model = getOrCreateModel(role, candidateModel)
+                        val firebaseHistory: List<Content> = historySnapshot.map { turn ->
+                            content(role = turn.role) { text(turn.text) }
+                        }
+                        val chat = model.startChat(history = firebaseHistory)
+                        chat.sendMessageStream(effectivePrompt).collect { chunk ->
+                            val chunkText = chunk.text.orEmpty()
+                            if (chunkText.isNotEmpty()) {
+                                accumulatedText.append(chunkText)
+                                emit(
+                                    GeminiStreamEvent.Chunk(
+                                        accumulatedText = accumulatedText.toString(),
+                                        role = role,
+                                        modelName = candidateModel
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
 
                 val finalText = accumulatedText.toString().trim()
                 if (finalText.isNotEmpty()) {
-                    conversationHistory.add(content(role = "user") { text(userPrompt) })
-                    conversationHistory.add(content(role = "model") { text(finalText) })
-                    if (conversationHistory.size > MAX_HISTORY_CONTENTS) {
-                        repeat(conversationHistory.size - MAX_HISTORY_CONTENTS) {
-                            conversationHistory.removeAt(0)
+                    historyTurns.add(ChatTurn("user", userPrompt))
+                    historyTurns.add(ChatTurn("model", finalText))
+                    if (historyTurns.size > MAX_HISTORY_CONTENTS) {
+                        repeat(historyTurns.size - MAX_HISTORY_CONTENTS) {
+                            historyTurns.removeAt(0)
                         }
                     }
                     emit(GeminiStreamEvent.Completed(finalText, role, candidateModel))
@@ -263,15 +323,20 @@ class GeminiChatService {
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: PersonalApiKeyAuthException) {
+                Log.e(TAG, "Personal Gemini API key rejected on $candidateModel", e)
+                emit(GeminiStreamEvent.Error(e.message ?: "Your personal Gemini API key was rejected."))
+                return@flow
             } catch (e: Exception) {
                 Log.e(TAG, "Gemini chat generation failed on $candidateModel", e)
                 val errorText = buildErrorChainText(e)
+                val isAvailabilityOrQuota = isQuotaOrModelAvailabilityError(errorText)
                 val canFallback = selection is ReasoningSelection.Auto &&
                     accumulatedText.isEmpty() &&
-                    isQuotaOrModelAvailabilityError(errorText)
+                    isAvailabilityOrQuota
 
-                if (isQuotaOrModelAvailabilityError(errorText)) {
-                    quotaExhaustedModels.add(candidateModel)
+                if (isAvailabilityOrQuota) {
+                    exhaustedSet.add(candidateModel)
                 }
 
                 if (canFallback) {
@@ -280,23 +345,123 @@ class GeminiChatService {
                     continue
                 }
 
-                val displayMessage = if (selection is ReasoningSelection.Fixed &&
-                    isQuotaOrModelAvailabilityError(errorText)
-                ) {
-                    "${e.localizedMessage ?: "Quota exceeded for $candidateModel."} Switch to Auto Route to use a model with available quota."
-                } else {
-                    e.localizedMessage ?: "Failed to generate response from Gemini."
+                val displayMessage = when {
+                    selection is ReasoningSelection.Fixed && isAvailabilityOrQuota -> {
+                        "${e.localizedMessage ?: "Quota exceeded for $candidateModel."} Switch to Auto Route to use a model with available quota."
+                    }
+                    !usingPersonalKey && isAvailabilityOrQuota -> {
+                        "Shared app quota reached. You can add your own Gemini API key in Account settings to use your personal quota."
+                    }
+                    else -> e.localizedMessage ?: "Failed to generate response from Gemini."
                 }
                 emit(GeminiStreamEvent.Error(displayMessage))
                 return@flow
             }
         }
 
-        emit(
-            GeminiStreamEvent.Error(
-                lastError ?: "All available Gemini models reached quota limits. Please try again shortly."
+        val fallbackExhaustedMsg = if (usingPersonalKey) {
+            lastError ?: "All available Gemini models reached quota limits on your API key."
+        } else {
+            lastError ?: "Shared Gemini quota is exhausted. Add your own Gemini API key in Account settings to continue with your personal quota."
+        }
+        emit(GeminiStreamEvent.Error(fallbackExhaustedMsg))
+    }.flowOn(Dispatchers.IO)
+
+    private suspend fun streamWithPersonalApiKey(
+        apiKey: String,
+        modelName: String,
+        systemInstruction: String,
+        history: List<ChatTurn>,
+        userPrompt: String,
+        onChunk: suspend (String) -> Unit
+    ) {
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$modelName:streamGenerateContent?alt=sse")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 20_000
+            readTimeout = 55_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("x-goog-api-key", apiKey)
+        }
+
+        try {
+            val contentsArray = JSONArray()
+            for (turn in history) {
+                contentsArray.put(
+                    JSONObject().apply {
+                        put("role", turn.role)
+                        put("parts", JSONArray().put(JSONObject().put("text", turn.text)))
+                    }
+                )
+            }
+            contentsArray.put(
+                JSONObject().apply {
+                    put("role", "user")
+                    put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
+                }
             )
-        )
+
+            val requestBody = JSONObject().apply {
+                put(
+                    "systemInstruction",
+                    JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemInstruction)))
+                )
+                put("contents", contentsArray)
+            }.toString()
+
+            connection.outputStream.use { out ->
+                out.write(requestBody.toByteArray(StandardCharsets.UTF_8))
+                out.flush()
+            }
+
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val errBody = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val parsedMessage = parseApiErrorMessage(errBody)
+                if (code == 401 || code == 403 || parsedMessage.contains("api key", ignoreCase = true)) {
+                    throw PersonalApiKeyAuthException(
+                        parsedMessage.ifBlank { "Invalid or unauthorized personal Gemini API key (HTTP $code)." }
+                    )
+                }
+                throw IllegalStateException(
+                    parsedMessage.ifBlank { "Gemini API error ($code)" }
+                )
+            }
+
+            BufferedReader(InputStreamReader(connection.inputStream, StandardCharsets.UTF_8)).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (!line.startsWith("data:")) continue
+                    val jsonPayload = line.removePrefix("data:").trim()
+                    if (jsonPayload.isEmpty() || jsonPayload == "[DONE]") continue
+
+                    val root = JSONObject(jsonPayload)
+                    val candidates = root.optJSONArray("candidates") ?: continue
+                    val firstCandidate = candidates.optJSONObject(0) ?: continue
+                    val contentObj = firstCandidate.optJSONObject("content") ?: continue
+                    val parts = contentObj.optJSONArray("parts") ?: continue
+                    for (i in 0 until parts.length()) {
+                        val partText = parts.optJSONObject(i)?.optString("text").orEmpty()
+                        if (partText.isNotEmpty()) {
+                            onChunk(partText)
+                        }
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun parseApiErrorMessage(rawBody: String): String {
+        if (rawBody.isBlank()) return ""
+        return try {
+            val json = JSONObject(rawBody)
+            json.optJSONObject("error")?.optString("message").orEmpty()
+        } catch (_: Exception) {
+            rawBody.take(240)
+        }
     }
 
     private fun isQuotaOrModelAvailabilityError(errorText: String): Boolean {
@@ -344,6 +509,8 @@ class GeminiChatService {
             append(userPrompt)
         }
     }
+
+    private class PersonalApiKeyAuthException(message: String) : Exception(message)
 
     companion object {
         private const val TAG = "GeminiChatService"
