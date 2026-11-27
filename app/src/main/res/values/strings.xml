@@ -19,6 +19,12 @@
     <string name="settings_action_cd">Bot parameters</string>
     <string name="history_action_cd">Saved conversations</string>
     <string name="account_action_cd">Account and API key settings</string>
+    <string name="more_options_cd">More options</string>
+    <string name="menu_account">Account &amp; API Key</string>
+    <string name="menu_voice_on">Voice Replies: On</string>
+    <string name="menu_voice_off">Voice Replies: Off</string>
+    <string name="menu_train">Train HeroBot</string>
+    <string name="menu_clear_chat">Clear Conversation</string>
     <string name="sign_in_with_google">Sign in with Google</string>
     <string name="sign_out">Sign out</string>
 </resources>

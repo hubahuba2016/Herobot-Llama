@@ -49,10 +49,13 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -72,6 +75,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -140,6 +144,7 @@ fun ChatScreen(
     onClearChat: () -> Unit
 ) {
     var inputText by rememberSaveable { mutableStateOf("") }
+    var showOverflowMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val lastMessageLength = uiState.messages.lastOrNull()?.text?.length ?: 0
@@ -236,7 +241,9 @@ fun ChatScreen(
                             Column {
                                 Text(
                                     text = stringResource(R.string.app_name),
-                                    style = MaterialTheme.typography.titleLarge
+                                    style = MaterialTheme.typography.titleLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 val quotaLabel = if (uiState.hasPersonalApiKey) "Personal Key" else "Shared Quota"
                                 Text(
@@ -271,42 +278,6 @@ fun ChatScreen(
                             )
                         }
                         IconButton(
-                            onClick = onOpenAccountDialog,
-                            modifier = Modifier.testTag("account_action_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AccountCircle,
-                                contentDescription = stringResource(R.string.account_action_cd),
-                                tint = if (uiState.hasPersonalApiKey) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
-                        }
-                        IconButton(
-                            onClick = onToggleTts,
-                            modifier = Modifier.testTag("tts_toggle_button")
-                        ) {
-                            Icon(
-                                imageVector = if (uiState.isTtsEnabled) {
-                                    Icons.AutoMirrored.Rounded.VolumeUp
-                                } else {
-                                    Icons.AutoMirrored.Rounded.VolumeOff
-                                },
-                                contentDescription = stringResource(R.string.tts_toggle_cd)
-                            )
-                        }
-                        IconButton(
-                            onClick = onOpenTrainDialog,
-                            modifier = Modifier.testTag("train_action_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Psychology,
-                                contentDescription = stringResource(R.string.train_action_cd)
-                            )
-                        }
-                        IconButton(
                             onClick = onOpenParametersDialog,
                             modifier = Modifier.testTag("settings_action_button")
                         ) {
@@ -315,15 +286,97 @@ fun ChatScreen(
                                 contentDescription = stringResource(R.string.settings_action_cd)
                             )
                         }
-                        if (uiState.messages.isNotEmpty()) {
+                        Box {
                             IconButton(
-                                onClick = onClearChat,
-                                modifier = Modifier.testTag("clear_chat_button")
+                                onClick = { showOverflowMenu = true },
+                                modifier = Modifier.testTag("more_options_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.DeleteOutline,
-                                    contentDescription = "Clear conversation"
+                                    imageVector = Icons.Rounded.MoreVert,
+                                    contentDescription = stringResource(R.string.more_options_cd)
                                 )
+                            }
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.menu_account)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AccountCircle,
+                                            contentDescription = null,
+                                            tint = if (uiState.hasPersonalApiKey) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onOpenAccountDialog()
+                                    },
+                                    modifier = Modifier.testTag("account_action_button")
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (uiState.isTtsEnabled) {
+                                                    R.string.menu_voice_on
+                                                } else {
+                                                    R.string.menu_voice_off
+                                                }
+                                            )
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (uiState.isTtsEnabled) {
+                                                Icons.AutoMirrored.Rounded.VolumeUp
+                                            } else {
+                                                Icons.AutoMirrored.Rounded.VolumeOff
+                                            },
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onToggleTts()
+                                    },
+                                    modifier = Modifier.testTag("tts_toggle_button")
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.menu_train)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Psychology,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onOpenTrainDialog()
+                                    },
+                                    modifier = Modifier.testTag("train_action_button")
+                                )
+                                if (uiState.messages.isNotEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.menu_clear_chat)) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Rounded.DeleteOutline,
+                                                contentDescription = null
+                                            )
+                                        },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            onClearChat()
+                                        },
+                                        modifier = Modifier.testTag("clear_chat_button")
+                                    )
+                                }
                             }
                         }
                     }
