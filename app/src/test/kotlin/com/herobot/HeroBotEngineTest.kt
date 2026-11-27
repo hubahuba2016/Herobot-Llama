@@ -1,9 +1,12 @@
 package com.herobot
 
 import com.herobot.ai.AssistantRole
+import com.herobot.ai.GeminiChatService
 import com.herobot.ai.GeminiModelRouter
 import com.herobot.ai.ReasoningSelection
+import com.herobot.data.local.ConversationHistoryRepository
 import com.herobot.data.local.ConversationMessageEntity
+import com.herobot.data.local.CrossSessionMessageRow
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
@@ -231,5 +234,89 @@ class HeroBotEngineTest {
         assertEquals("Here is the local Gemma 3 1B reply.", mapped.text)
         assertEquals(1732680000000L, mapped.timestampMillis)
         assertFalse(mapped.isStreaming)
+    }
+
+    @Test
+    fun selectCrossSessionMemoriesSurfacesRelevantAndPersonalHistory() {
+        val rows = listOf(
+            CrossSessionMessageRow(
+                sessionId = "s2",
+                sessionTitle = "Weather Chat",
+                text = "Today is sunny in Jakarta.",
+                senderType = ChatMessage.Type.USER.name,
+                source = null,
+                clientTimestampMillis = 4000L
+            ),
+            CrossSessionMessageRow(
+                sessionId = "s1",
+                sessionTitle = "Intro Chat",
+                text = "System: HeroBot has learned a new response.",
+                senderType = ChatMessage.Type.BOT.name,
+                source = BotResponse.Source.SYSTEM.name,
+                clientTimestampMillis = 3000L
+            ),
+            CrossSessionMessageRow(
+                sessionId = "s1",
+                sessionTitle = "Intro Chat",
+                text = "My name is Budi and I use a Samsung M15.",
+                senderType = ChatMessage.Type.USER.name,
+                source = null,
+                clientTimestampMillis = 2000L
+            ),
+            CrossSessionMessageRow(
+                sessionId = "s1",
+                sessionTitle = "Intro Chat",
+                text = "Nice to meet you, Budi!",
+                senderType = ChatMessage.Type.BOT.name,
+                source = BotResponse.Source.GEMINI.name,
+                clientTimestampMillis = 2500L
+            )
+        )
+
+        val memories = ConversationHistoryRepository.selectCrossSessionMemories(
+            rows = rows,
+            currentPrompt = "What phone do I use and what is my name?",
+            maxItems = 3
+        )
+
+        assertTrue(memories.any { it.contains("Budi") && it.contains("Samsung M15") })
+        assertFalse(memories.any { it.contains("learned a new response") })
+    }
+
+    @Test
+    fun geminiNormalizeHistoryEnforcesAlternatingUserModelTurns() {
+        val raw = listOf(
+            ChatMessage(text = "System: boot", type = ChatMessage.Type.BOT, source = BotResponse.Source.SYSTEM),
+            ChatMessage(text = "Orphan bot greeting", type = ChatMessage.Type.BOT, source = BotResponse.Source.GEMINI),
+            ChatMessage(text = "First question", type = ChatMessage.Type.USER),
+            ChatMessage(text = "Follow-up before reply", type = ChatMessage.Type.USER),
+            ChatMessage(text = "Combined reply", type = ChatMessage.Type.BOT, source = BotResponse.Source.GEMINI)
+        )
+
+        val normalized = GeminiChatService.normalizeMessagesForGemini(raw)
+        assertEquals(2, normalized.size)
+        assertEquals("user", normalized[0].role)
+        assertTrue(normalized[0].text.contains("First question"))
+        assertTrue(normalized[0].text.contains("Follow-up before reply"))
+        assertEquals("model", normalized[1].role)
+        assertEquals("Combined reply", normalized[1].text)
+    }
+
+    @Test
+    fun ollamaPayloadIncludesCrossSessionMemoriesInSystemPrompt() {
+        val payload = OllamaClient.buildChatRequestPayload(
+            userPrompt = "What is my name?",
+            history = emptyList(),
+            learnedMemories = emptyList(),
+            localHint = null,
+            model = OllamaClient.DEFAULT_MODEL,
+            temperature = 0.7,
+            topP = 0.9,
+            stream = false,
+            crossSessionMemories = listOf("[Intro] User: My name is Budi")
+        )
+
+        val systemMsg = payload.getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(systemMsg.contains("My name is Budi"))
     }
 }

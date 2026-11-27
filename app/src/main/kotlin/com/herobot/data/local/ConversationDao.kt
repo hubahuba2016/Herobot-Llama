@@ -66,4 +66,27 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversation_sessions WHERE id = :sessionId AND userId = :userId")
     suspend fun deleteSession(userId: String, sessionId: String)
+
+    @Query(
+        """
+        SELECT m.sessionId AS sessionId,
+               s.title AS sessionTitle,
+               m.text AS text,
+               m.senderType AS senderType,
+               m.source AS source,
+               m.clientTimestampMillis AS clientTimestampMillis
+        FROM conversation_messages m
+        INNER JOIN conversation_sessions s ON s.id = m.sessionId
+        WHERE m.userId = :userId
+          AND m.sessionId != :excludeSessionId
+          AND (m.source IS NULL OR m.source != 'SYSTEM')
+        ORDER BY m.clientTimestampMillis DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getRecentCrossSessionMessages(
+        userId: String,
+        excludeSessionId: String,
+        limit: Int = 160
+    ): List<CrossSessionMessageRow>
 }

@@ -9,6 +9,7 @@ import com.google.firebase.ai.type.GenerativeBackend
 import com.google.firebase.ai.type.content
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
+import com.herobot.model.BotResponse
 import com.herobot.model.ChatMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -182,7 +183,7 @@ object GeminiModelRouter {
 
 class GeminiChatService {
 
-    private data class ChatTurn(val role: String, val text: String)
+    data class ChatTurn(val role: String, val text: String)
 
     private val modelCache = ConcurrentHashMap<Pair<AssistantRole, String>, GenerativeModel>()
     private val quotaExhaustedSharedModels = ConcurrentHashMap.newKeySet<String>()
@@ -222,22 +223,23 @@ class GeminiChatService {
 
     fun restoreHistory(messages: List<ChatMessage>) {
         historyTurns.clear()
-        messages.filter { !it.isStreaming && it.text.isNotBlank() }
-            .takeLast(MAX_HISTORY_CONTENTS)
-            .forEach { message ->
-                val turnRole = if (message.type == ChatMessage.Type.USER) "user" else "model"
-                historyTurns.add(ChatTurn(turnRole, message.text.trim()))
-            }
+        historyTurns.addAll(normalizeMessagesForGemini(messages))
     }
 
     fun appendTurn(userPrompt: String, modelReply: String) {
         val u = userPrompt.trim()
         val m = modelReply.trim()
         if (u.isEmpty() || m.isEmpty()) return
+        if (historyTurns.lastOrNull()?.role == "user") {
+            historyTurns.removeAt(historyTurns.lastIndex)
+        }
         historyTurns.add(ChatTurn("user", u))
         historyTurns.add(ChatTurn("model", m))
         if (historyTurns.size > MAX_HISTORY_CONTENTS) {
             repeat(historyTurns.size - MAX_HISTORY_CONTENTS) {
+                historyTurns.removeAt(0)
+            }
+            while (historyTurns.firstOrNull()?.role == "model") {
                 historyTurns.removeAt(0)
             }
         }
@@ -251,7 +253,8 @@ class GeminiChatService {
         userPrompt: String,
         selection: ReasoningSelection,
         localHint: String? = null,
-        personalApiKey: String? = null
+        personalApiKey: String? = null,
+        crossSessionMemories: List<String> = emptyList()
     ): Flow<GeminiStreamEvent> = flow {
         val trimmedPersonalKey = personalApiKey?.trim()?.takeIf { it.isNotEmpty() }
         val usingPersonalKey = trimmedPersonalKey != null
@@ -263,8 +266,21 @@ class GeminiChatService {
             selection = selection,
             exhaustedModels = exhaustedSet
         )
-        val effectivePrompt = buildEffectivePrompt(userPrompt, localHint)
-        val historySnapshot = historyTurns.toList()
+        val rawHistory = historyTurns.toMutableList()
+        var pendingOrphanUserTurn: String? = null
+        if (rawHistory.lastOrNull()?.role == "user") {
+            val lastUser = rawHistory.removeAt(rawHistory.lastIndex)
+            if (lastUser.text != userPrompt.trim()) {
+                pendingOrphanUserTurn = lastUser.text
+            }
+        }
+        val historySnapshot = rawHistory.toList()
+        val effectivePrompt = buildEffectivePrompt(
+            userPrompt = userPrompt,
+            localHint = localHint,
+            crossSessionMemories = crossSessionMemories,
+            orphanPreviousUserTurn = pendingOrphanUserTurn
+        )
 
         var lastError: String? = null
 
@@ -315,13 +331,7 @@ class GeminiChatService {
 
                 val finalText = accumulatedText.toString().trim()
                 if (finalText.isNotEmpty()) {
-                    historyTurns.add(ChatTurn("user", userPrompt))
-                    historyTurns.add(ChatTurn("model", finalText))
-                    if (historyTurns.size > MAX_HISTORY_CONTENTS) {
-                        repeat(historyTurns.size - MAX_HISTORY_CONTENTS) {
-                            historyTurns.removeAt(0)
-                        }
-                    }
+                    appendTurn(userPrompt, finalText)
                     emit(GeminiStreamEvent.Completed(finalText, role, candidateModel))
                     return@flow
                 } else {
@@ -502,13 +512,29 @@ class GeminiChatService {
         return sb.toString()
     }
 
-    private fun buildEffectivePrompt(userPrompt: String, localHint: String?): String {
+    private fun buildEffectivePrompt(
+        userPrompt: String,
+        localHint: String?,
+        crossSessionMemories: List<String>,
+        orphanPreviousUserTurn: String?
+    ): String {
         val relevantLearned = learnedMemories.takeLast(5)
-        if (relevantLearned.isEmpty() && localHint.isNullOrBlank()) {
+        if (relevantLearned.isEmpty() &&
+            crossSessionMemories.isEmpty() &&
+            localHint.isNullOrBlank() &&
+            orphanPreviousUserTurn.isNullOrBlank()
+        ) {
             return userPrompt
         }
 
         return buildString {
+            if (crossSessionMemories.isNotEmpty()) {
+                append("Relevant memory from the user's previous saved conversations:\n")
+                for (memory in crossSessionMemories.take(8)) {
+                    append("- ").append(memory).append('\n')
+                }
+                append('\n')
+            }
             if (relevantLearned.isNotEmpty()) {
                 append("User-taught knowledge from this session:\n")
                 for ((q, a) in relevantLearned) {
@@ -518,6 +544,9 @@ class GeminiChatService {
             }
             if (!localHint.isNullOrBlank()) {
                 append("Local verification context: ").append(localHint).append("\n\n")
+            }
+            if (!orphanPreviousUserTurn.isNullOrBlank()) {
+                append("Earlier unanswered user note: ").append(orphanPreviousUserTurn).append("\n\n")
             }
             append(userPrompt)
         }
@@ -529,5 +558,29 @@ class GeminiChatService {
         private const val TAG = "GeminiChatService"
         private const val TIMEOUT_MILLIS = 60_000L
         private const val MAX_HISTORY_CONTENTS = 24
+
+        fun normalizeMessagesForGemini(messages: List<ChatMessage>): List<ChatTurn> {
+            val merged = mutableListOf<ChatTurn>()
+            for (message in messages) {
+                if (message.isStreaming || message.text.isBlank()) continue
+                if (message.source == BotResponse.Source.SYSTEM) continue
+                val role = if (message.type == ChatMessage.Type.USER) "user" else "model"
+                val text = message.text.trim()
+                val last = merged.lastOrNull()
+                if (last != null && last.role == role) {
+                    merged[merged.lastIndex] = last.copy(text = "${last.text}\n\n$text")
+                } else {
+                    merged.add(ChatTurn(role, text))
+                }
+            }
+            while (merged.firstOrNull()?.role == "model") {
+                merged.removeAt(0)
+            }
+            val sliced = merged.takeLast(MAX_HISTORY_CONTENTS).toMutableList()
+            while (sliced.firstOrNull()?.role == "model") {
+                sliced.removeAt(0)
+            }
+            return sliced
+        }
     }
 }

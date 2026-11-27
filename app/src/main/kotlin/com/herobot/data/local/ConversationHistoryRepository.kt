@@ -1,8 +1,11 @@
 package com.herobot.data.local
 
 import com.herobot.data.remote.ChatMessageRecord
+import com.herobot.engine.NLPHelper
+import com.herobot.model.BotResponse
 import com.herobot.model.ChatMessage
 import kotlinx.coroutines.flow.Flow
+import java.util.Locale
 import java.util.UUID
 
 class ConversationHistoryRepository(
@@ -177,6 +180,24 @@ class ConversationHistoryRepository(
         dao.deleteSession(userId, sessionId)
     }
 
+    suspend fun getCrossSessionMemories(
+        userId: String,
+        activeSessionId: String,
+        currentPrompt: String,
+        maxItems: Int = 8
+    ): List<String> {
+        val recentRows = dao.getRecentCrossSessionMessages(
+            userId = userId,
+            excludeSessionId = activeSessionId,
+            limit = 160
+        )
+        return selectCrossSessionMemories(
+            rows = recentRows,
+            currentPrompt = currentPrompt,
+            maxItems = maxItems
+        )
+    }
+
     private fun deriveTitleFromMessage(message: ChatMessage): String? {
         if (message.type != ChatMessage.Type.USER) return null
         return formatTitle(message.text)
@@ -190,6 +211,61 @@ class ConversationHistoryRepository(
 
     companion object {
         const val DEFAULT_SESSION_TITLE = "New Conversation"
+        private val WHITESPACE_REGEX = Regex("\\s+")
+        private val PERSONAL_MEMORY_CUES = listOf(
+            "my name", "i am ", "i'm ", "call me", "my favorite", "my phone", "i use ",
+            "i live", "i work", "remember ", "my ", "prefer ", "nama saya", "panggil saya",
+            "saya suka", "saya pakai", "hp saya", "ingat "
+        )
+
         fun primarySessionId(userId: String): String = "primary_$userId"
+
+        fun selectCrossSessionMemories(
+            rows: List<CrossSessionMessageRow>,
+            currentPrompt: String,
+            maxItems: Int = 8
+        ): List<String> {
+            if (rows.isEmpty() || maxItems <= 0) return emptyList()
+            val validRows = rows.filter {
+                it.text.isNotBlank() && it.source != BotResponse.Source.SYSTEM.name
+            }
+            if (validRows.isEmpty()) return emptyList()
+
+            val promptVector = NLPHelper.getVector(currentPrompt)
+            val total = validRows.size.toDouble()
+
+            val scored = validRows.mapIndexed { index, row ->
+                val textLower = row.text.lowercase(Locale.ROOT)
+                val rowVector = NLPHelper.getVector(row.text)
+                val similarity = if (promptVector.isNotEmpty() && rowVector.isNotEmpty()) {
+                    NLPHelper.cosineSimilarity(promptVector, rowVector)
+                } else {
+                    0.0
+                }
+                val isUser = row.senderType == ChatMessage.Type.USER.name
+                val hasPersonalCue = isUser && PERSONAL_MEMORY_CUES.any { cue -> textLower.contains(cue) }
+                val recencyBonus = ((total - index) / total) * 0.25
+                val roleBonus = if (isUser) 0.08 else 0.0
+                val cueBonus = if (hasPersonalCue) 0.35 else 0.0
+                val score = (similarity * 1.5) + cueBonus + roleBonus + recencyBonus
+                row to score
+            }
+
+            val selected = scored
+                .sortedByDescending { it.second }
+                .take(maxItems)
+                .map { it.first }
+                .sortedBy { it.clientTimestampMillis }
+
+            return selected.map { row ->
+                val speaker = if (row.senderType == ChatMessage.Type.USER.name) "User" else "HeroBot"
+                val title = row.sessionTitle.replace(WHITESPACE_REGEX, " ").trim()
+                    .ifEmpty { DEFAULT_SESSION_TITLE }
+                    .let { if (it.length <= 28) it else "${it.take(25)}…" }
+                val compact = row.text.replace(WHITESPACE_REGEX, " ").trim()
+                    .let { if (it.length <= 240) it else "${it.take(237)}…" }
+                "[$title] $speaker: $compact"
+            }
+        }
     }
 }

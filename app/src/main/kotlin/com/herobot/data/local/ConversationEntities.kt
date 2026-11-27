@@ -80,3 +80,12 @@ data class ConversationSessionSummary(
     val messageCount: Int,
     val lastPreview: String?
 )
+
+data class CrossSessionMessageRow(
+    val sessionId: String,
+    val sessionTitle: String,
+    val text: String,
+    val senderType: String,
+    val source: String?,
+    val clientTimestampMillis: Long
+)

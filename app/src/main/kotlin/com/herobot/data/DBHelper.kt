@@ -50,6 +50,7 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         insertOrUpdateParameter(db, KEY_SEARCH_ENGINE, "duckduckgo")
         insertOrUpdateParameter(db, KEY_SEARCH_COUNTRY, "us")
         insertOrUpdateParameter(db, KEY_MAX_WEB_RESULTS, "3")
+        insertOrUpdateParameter(db, KEY_CROSS_SESSION_MEMORY, "true")
     }
 
     private fun seedDefaultParametersIfMissing(db: SQLiteDatabase) {
@@ -62,6 +63,7 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         insertParameterIfMissing(db, KEY_SEARCH_ENGINE, "duckduckgo")
         insertParameterIfMissing(db, KEY_SEARCH_COUNTRY, "us")
         insertParameterIfMissing(db, KEY_MAX_WEB_RESULTS, "3")
+        insertParameterIfMissing(db, KEY_CROSS_SESSION_MEMORY, "true")
     }
 
     private fun insertOrUpdateParameter(db: SQLiteDatabase, key: String, value: String) {
@@ -181,6 +183,7 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         const val KEY_SEARCH_ENGINE = "search_engine"
         const val KEY_SEARCH_COUNTRY = "search_country"
         const val KEY_MAX_WEB_RESULTS = "max_web_results"
+        const val KEY_CROSS_SESSION_MEMORY = "cross_session_memory"
 
         const val DEFAULT_OLLAMA_MODEL = "gemma3:1b"
         const val DEFAULT_OLLAMA_URL = "http://localhost:11434"

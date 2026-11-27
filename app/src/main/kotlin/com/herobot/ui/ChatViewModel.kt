@@ -265,6 +265,48 @@ class ChatViewModel(
         _uiState.update { it.copy(messages = combined) }
     }
 
+    private fun buildCurrentSessionPriorMessages(excludeTrailingUserPrompt: String?): List<ChatMessage> {
+        val filtered = persistedMessages
+            .filter {
+                !it.isStreaming &&
+                    it.text.isNotBlank() &&
+                    it.source != BotResponse.Source.SYSTEM
+            }
+            .toMutableList()
+        val targetPrompt = excludeTrailingUserPrompt?.trim()
+        if (!targetPrompt.isNullOrEmpty()) {
+            val last = filtered.lastOrNull()
+            if (last != null &&
+                last.type == ChatMessage.Type.USER &&
+                last.text.trim() == targetPrompt
+            ) {
+                filtered.removeAt(filtered.lastIndex)
+            }
+        }
+        return filtered
+    }
+
+    private suspend fun loadCrossSessionMemoriesIfEnabled(prompt: String): List<String> {
+        val enabled = _uiState.value.parameters[DBHelper.KEY_CROSS_SESSION_MEMORY]
+            ?.toBooleanStrictOrNull() ?: true
+        if (!enabled) return emptyList()
+        val sid = _activeSessionId.value ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            try {
+                conversationRepository.getCrossSessionMemories(
+                    userId = currentUserId,
+                    activeSessionId = sid,
+                    currentPrompt = prompt
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Cross-session memory lookup failed", e)
+                emptyList()
+            }
+        }
+    }
+
     fun submitInput(rawInput: String) {
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty() || _uiState.value.isProcessing) return
@@ -344,12 +386,17 @@ class ChatViewModel(
                     ?: MathEngine.evaluateTrigonometricExpression(prompt)
                     ?: MathEngine.evaluateArithmeticExpression(prompt)
             }
+            val crossSessionMemories = loadCrossSessionMemoriesIfEnabled(prompt)
+            geminiService.restoreHistory(
+                buildCurrentSessionPriorMessages(excludeTrailingUserPrompt = prompt)
+            )
 
             geminiService.sendMessageStream(
                 userPrompt = prompt,
                 selection = selection,
                 localHint = localHint,
-                personalApiKey = personalApiKey
+                personalApiKey = personalApiKey,
+                crossSessionMemories = crossSessionMemories
             ).collect { event ->
                 when (event) {
                     is GeminiStreamEvent.Started -> {
@@ -434,7 +481,8 @@ class ChatViewModel(
                                 prompt = prompt,
                                 localHint = localHint,
                                 geminiError = event.message,
-                                placeholderBotMessage = placeholderBotMessage
+                                placeholderBotMessage = placeholderBotMessage,
+                                crossSessionMemories = crossSessionMemories
                             )
                         }
                     }
@@ -447,7 +495,8 @@ class ChatViewModel(
         prompt: String,
         localHint: String?,
         geminiError: String,
-        placeholderBotMessage: ChatMessage
+        placeholderBotMessage: ChatMessage,
+        crossSessionMemories: List<String>
     ) {
         val readyModelPath = localModelManager.getReadyModelPath()
         if (readyModelPath != null) {
@@ -456,7 +505,8 @@ class ChatViewModel(
                 prompt = prompt,
                 localHint = localHint,
                 placeholderBotMessage = placeholderBotMessage,
-                announceToast = true
+                announceToast = true,
+                crossSessionMemories = crossSessionMemories
             )
             if (onDeviceSucceeded) return
         }
@@ -465,7 +515,8 @@ class ChatViewModel(
             prompt = prompt,
             localHint = localHint,
             geminiError = geminiError,
-            placeholderBotMessage = placeholderBotMessage
+            placeholderBotMessage = placeholderBotMessage,
+            crossSessionMemories = crossSessionMemories
         )
     }
 
@@ -474,7 +525,8 @@ class ChatViewModel(
         prompt: String,
         localHint: String?,
         placeholderBotMessage: ChatMessage,
-        announceToast: Boolean
+        announceToast: Boolean,
+        crossSessionMemories: List<String>
     ): Boolean {
         val params = _uiState.value.parameters
         val temperature = params[DBHelper.KEY_TEMPERATURE]?.toDoubleOrNull() ?: 0.7
@@ -485,9 +537,8 @@ class ChatViewModel(
             _toastEvents.tryEmit("Gemini unavailable — using On-Device Gemma 3 1B")
         }
 
-        val priorHistory = persistedMessages
-            .filter { !it.isStreaming && it.text.isNotBlank() }
-            .takeLast(6)
+        val priorHistory = buildCurrentSessionPriorMessages(excludeTrailingUserPrompt = prompt)
+            .takeLast(8)
             .map { msg ->
                 val role = if (msg.type == ChatMessage.Type.USER) "User" else "HeroBot"
                 role to msg.text.trim()
@@ -518,7 +569,9 @@ class ChatViewModel(
             learnedMemories = userLearnedQa.entries.map { it.key to it.value }.takeLast(4),
             localHint = localHint,
             temperature = temperature,
-            topP = topP
+            topP = topP,
+            sessionId = _activeSessionId.value ?: "default",
+            crossSessionMemories = crossSessionMemories
         ).collect { event ->
             when (event) {
                 is OnDeviceStreamEvent.Started -> {
@@ -613,7 +666,8 @@ class ChatViewModel(
         prompt: String,
         localHint: String?,
         geminiError: String,
-        placeholderBotMessage: ChatMessage
+        placeholderBotMessage: ChatMessage,
+        crossSessionMemories: List<String>
     ) {
         val params = _uiState.value.parameters
         val ollamaModel = params[DBHelper.KEY_MODEL]
@@ -629,8 +683,7 @@ class ChatViewModel(
 
         _toastEvents.tryEmit("Gemini unavailable — trying Ollama ($ollamaModel)")
 
-        val historySnapshot = persistedMessages
-            .filter { !it.isStreaming && it.text.isNotBlank() }
+        val historySnapshot = buildCurrentSessionPriorMessages(excludeTrailingUserPrompt = prompt)
             .takeLast(16)
             .map { msg ->
                 OllamaChatTurn(
@@ -663,7 +716,8 @@ class ChatViewModel(
             model = ollamaModel,
             temperature = temperature,
             topP = topP,
-            endpointUrl = ollamaUrl
+            endpointUrl = ollamaUrl,
+            crossSessionMemories = crossSessionMemories
         ).collect { ollamaEvent ->
             when (ollamaEvent) {
                 is OllamaStreamEvent.Started -> {
@@ -821,6 +875,8 @@ class ChatViewModel(
                 return@launch
             }
 
+            val crossSessionMemories = loadCrossSessionMemoriesIfEnabled(prompt)
+
             // If On-Device Gemma 3 1B (.litertlm) is downloaded, run it directly inside the app
             val readyModelPath = localModelManager.getReadyModelPath()
             if (readyModelPath != null) {
@@ -837,14 +893,27 @@ class ChatViewModel(
                     prompt = prompt,
                     localHint = null,
                     placeholderBotMessage = placeholder,
-                    announceToast = false
+                    announceToast = false,
+                    crossSessionMemories = crossSessionMemories
                 )
                 if (ranOnDevice) return@launch
             }
 
+            val externalHistory = buildCurrentSessionPriorMessages(excludeTrailingUserPrompt = prompt)
+                .takeLast(12)
+                .map { msg ->
+                    val prefix = if (msg.type == ChatMessage.Type.USER) "User" else "HeroBot"
+                    "$prefix: ${msg.text.trim()}"
+                }
+
             // Otherwise try external Ollama server or return final local response
             val fullLocalResponse = withContext(Dispatchers.IO) {
-                localEngine.reply(prompt, allowLocalLlm = true)
+                localEngine.reply(
+                    input = prompt,
+                    allowLocalLlm = true,
+                    externalHistory = externalHistory,
+                    crossSessionMemories = crossSessionMemories
+                )
             }
             deliverLocalBotResponse(fullLocalResponse)
         }
@@ -1076,11 +1145,14 @@ class ChatViewModel(
         activeGenerationJob?.cancel()
         streamingBotMessage = null
         pendingUserMessage = null
+        persistedMessages = emptyList()
+        geminiService.clearHistory()
         onDeviceGemmaService.resetConversation()
         _activeSessionId.value = sessionId
         _uiState.update {
             it.copy(
                 activeSessionId = sessionId,
+                messages = emptyList(),
                 isProcessing = false,
                 isUsingOllamaFallback = false,
                 isUsingOnDeviceGemma = false,
@@ -1094,8 +1166,10 @@ class ChatViewModel(
         activeGenerationJob?.cancel()
         streamingBotMessage = null
         pendingUserMessage = null
+        persistedMessages = emptyList()
         geminiService.clearHistory()
         onDeviceGemmaService.resetConversation()
+        refreshVisibleMessages()
         viewModelScope.launch {
             val newSessionId = conversationRepository.createNewSession(currentUserId)
             _activeSessionId.value = newSessionId

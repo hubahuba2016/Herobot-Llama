@@ -66,6 +66,8 @@ class OnDeviceGemmaService(context: Context) {
     private var loadedTemperature: Double = DEFAULT_TEMPERATURE
     private var loadedTopP: Double = DEFAULT_TOP_P
     private var hasPrimedConversation = false
+    private var activeSessionId: String? = null
+    private var syncedHistorySize: Int = 0
 
     @Volatile
     private var isGenerating = false
@@ -130,6 +132,8 @@ class OnDeviceGemmaService(context: Context) {
                 loadedTemperature = temperature
                 loadedTopP = topP
                 hasPrimedConversation = false
+                activeSessionId = null
+                syncedHistorySize = 0
                 _engineState.value = OnDeviceEngineState.Loaded(modelPath, candidate)
                 return Result.success(candidate)
             } catch (e: CancellationException) {
@@ -179,19 +183,27 @@ class OnDeviceGemmaService(context: Context) {
         learnedMemories: List<Pair<String, String>>,
         localHint: String?,
         temperature: Double = DEFAULT_TEMPERATURE,
-        topP: Double = DEFAULT_TOP_P
+        topP: Double = DEFAULT_TOP_P,
+        sessionId: String = "default",
+        crossSessionMemories: List<String> = emptyList()
     ): Flow<OnDeviceStreamEvent> = flow {
         val loadResult = mutex.withLock {
             val res = loadModelInternal(modelPath, accelerator, temperature, topP)
-            if (res.isSuccess && (loadedTemperature != temperature || loadedTopP != topP)) {
+            if (res.isSuccess) {
                 val activeEngine = engine
-                if (activeEngine != null) {
+                val needsRecreate = loadedTemperature != temperature ||
+                    loadedTopP != topP ||
+                    (activeSessionId != null && activeSessionId != sessionId) ||
+                    priorHistory.size < syncedHistorySize
+                if (activeEngine != null && needsRecreate) {
                     conversation?.close()
                     conversation = createConversation(activeEngine, temperature, topP)
                     loadedTemperature = temperature
                     loadedTopP = topP
                     hasPrimedConversation = false
+                    syncedHistorySize = 0
                 }
+                activeSessionId = sessionId
             }
             res
         }
@@ -207,13 +219,6 @@ class OnDeviceGemmaService(context: Context) {
 
         emit(OnDeviceStreamEvent.Started(LocalModelManager.MODEL_ID, activeAccelerator))
 
-        val effectivePrompt = buildPromptForTurn(
-            userPrompt = userPrompt,
-            priorHistory = priorHistory,
-            learnedMemories = learnedMemories,
-            localHint = localHint
-        )
-
         val accumulated = StringBuilder()
         mutex.withLock {
             val activeConversation = conversation
@@ -221,6 +226,18 @@ class OnDeviceGemmaService(context: Context) {
                 emit(OnDeviceStreamEvent.Error("On-device conversation is not initialized."))
                 return@flow
             }
+            val unsyncedHistory = if (!hasPrimedConversation) {
+                priorHistory
+            } else {
+                priorHistory.drop(syncedHistorySize.coerceAtMost(priorHistory.size))
+            }
+            val effectivePrompt = buildPromptForTurn(
+                userPrompt = userPrompt,
+                unsyncedHistory = unsyncedHistory,
+                learnedMemories = learnedMemories,
+                crossSessionMemories = crossSessionMemories,
+                localHint = localHint
+            )
             isGenerating = true
             try {
                 activeConversation.sendMessageAsync(effectivePrompt).collect { chunk ->
@@ -235,7 +252,11 @@ class OnDeviceGemmaService(context: Context) {
                         )
                     }
                 }
-                hasPrimedConversation = true
+                if (accumulated.isNotBlank()) {
+                    hasPrimedConversation = true
+                    activeSessionId = sessionId
+                    syncedHistorySize = priorHistory.size + 2
+                }
             } catch (e: CancellationException) {
                 activeConversation.cancelProcess()
                 throw e
@@ -262,19 +283,28 @@ class OnDeviceGemmaService(context: Context) {
 
     private fun buildPromptForTurn(
         userPrompt: String,
-        priorHistory: List<Pair<String, String>>,
+        unsyncedHistory: List<Pair<String, String>>,
         learnedMemories: List<Pair<String, String>>,
+        crossSessionMemories: List<String>,
         localHint: String?
     ): String {
-        val includeHistory = !hasPrimedConversation && priorHistory.isNotEmpty()
+        val includeHistory = unsyncedHistory.isNotEmpty()
         val includeLearned = !hasPrimedConversation && learnedMemories.isNotEmpty()
+        val includeCrossMemory = crossSessionMemories.isNotEmpty()
         val isMath = MathEngine.isMathematicsRequest(userPrompt)
 
-        if (!includeHistory && !includeLearned && localHint.isNullOrBlank() && !isMath) {
+        if (!includeHistory && !includeLearned && !includeCrossMemory && localHint.isNullOrBlank() && !isMath) {
             return userPrompt
         }
 
         return buildString {
+            if (includeCrossMemory) {
+                append("Memory from previous saved conversations:\n")
+                for (memory in crossSessionMemories.take(5)) {
+                    append("- ").append(memory.take(200)).append('\n')
+                }
+                append('\n')
+            }
             if (includeLearned) {
                 append("User-taught facts:\n")
                 for ((q, a) in learnedMemories.takeLast(4)) {
@@ -284,7 +314,7 @@ class OnDeviceGemmaService(context: Context) {
             }
             if (includeHistory) {
                 append("Recent conversation context:\n")
-                for ((role, text) in priorHistory.takeLast(6)) {
+                for ((role, text) in unsyncedHistory.takeLast(8)) {
                     append(role).append(": ").append(text.take(400)).append('\n')
                 }
                 append('\n')
@@ -306,10 +336,12 @@ class OnDeviceGemmaService(context: Context) {
                     conversation?.cancelProcess()
                     delay(100)
                 }
+                activeSessionId = null
+                syncedHistorySize = 0
+                hasPrimedConversation = false
                 val activeEngine = engine ?: return@withLock
                 conversation?.close()
                 conversation = createConversation(activeEngine, loadedTemperature, loadedTopP)
-                hasPrimedConversation = false
             }
         }
     }
@@ -353,6 +385,8 @@ class OnDeviceGemmaService(context: Context) {
             engine = null
         }
         hasPrimedConversation = false
+        activeSessionId = null
+        syncedHistorySize = 0
         _engineState.value = OnDeviceEngineState.Unloaded
     }
 

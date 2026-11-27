@@ -60,7 +60,12 @@ class ChatbotEngine(
         }
     }
 
-    fun reply(input: String, allowLocalLlm: Boolean = true): BotResponse {
+    fun reply(
+        input: String,
+        allowLocalLlm: Boolean = true,
+        externalHistory: List<String>? = null,
+        crossSessionMemories: List<String> = emptyList()
+    ): BotResponse {
         ensureSeeded()
 
         val normalizedInput = NLPHelper.normalize(input)
@@ -187,7 +192,7 @@ class ChatbotEngine(
         }
 
         if (allowLocalLlm && MathEngine.isMathematicsRequest(input)) {
-            askLocalLLM(input)?.let { (llmReply, modelUsed) ->
+            askLocalLLM(input, externalHistory, crossSessionMemories)?.let { (llmReply, modelUsed) ->
                 return BotResponse(
                     text = llmReply,
                     source = BotResponse.Source.LLM,
@@ -214,7 +219,7 @@ class ChatbotEngine(
 
         // 5. Local LLM prompt for general conversation
         if (allowLocalLlm && shouldPreferLocalPromptBeforeWeb(normalizedInput)) {
-            askLocalLLM(normalizedInput)?.let { (llmReply, modelUsed) ->
+            askLocalLLM(normalizedInput, externalHistory, crossSessionMemories)?.let { (llmReply, modelUsed) ->
                 return BotResponse(
                     text = llmReply,
                     source = BotResponse.Source.LLM,
@@ -314,7 +319,11 @@ class ChatbotEngine(
     private fun isWebSearchEnabled(): Boolean =
         db?.getParameter(DBHelper.KEY_WEB_SEARCH_ENABLED, "true")?.toBooleanStrictOrNull() ?: true
 
-    private fun askLocalLLM(prompt: String): Pair<String, String>? {
+    private fun askLocalLLM(
+        prompt: String,
+        externalHistory: List<String>? = null,
+        crossSessionMemories: List<String> = emptyList()
+    ): Pair<String, String>? {
         val model = db?.getParameter(DBHelper.KEY_MODEL, OllamaClient.DEFAULT_MODEL)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
@@ -326,15 +335,17 @@ class ChatbotEngine(
         val temperature = db?.getParameter(DBHelper.KEY_TEMPERATURE, "0.7")?.toDoubleOrNull() ?: 0.7
         val topP = db?.getParameter(DBHelper.KEY_TOP_P, "0.9")?.toDoubleOrNull() ?: 0.9
         val stream = db?.getParameter(DBHelper.KEY_STREAM, "false")?.toBooleanStrictOrNull() ?: false
+        val effectiveHistory = externalHistory?.takeIf { it.isNotEmpty() } ?: history.getHistory()
 
         val reply = OllamaClient.askLocalLLM(
             prompt = prompt,
-            history = history.getHistory(),
+            history = effectiveHistory,
             model = model,
             temperature = temperature,
             topP = topP,
             stream = stream,
-            endpointUrl = endpointUrl
+            endpointUrl = endpointUrl,
+            crossSessionMemories = crossSessionMemories
         ) ?: return null
         return reply to model
     }

@@ -71,13 +71,20 @@ object OllamaClient {
         model: String,
         temperature: Double,
         topP: Double,
-        stream: Boolean
+        stream: Boolean,
+        crossSessionMemories: List<String> = emptyList()
     ): JSONObject {
         val resolvedModel = model.trim().ifEmpty { DEFAULT_MODEL }
         val systemText = buildString {
             append(CONVERSATIONAL_REASONING_INSTRUCTION)
             if (MathEngine.isMathematicsRequest(userPrompt)) {
                 append("For mathematics, show the relevant formula, necessary calculation steps, units when applicable, and verify the result. Do not use web search or cite web sources.\n")
+            }
+            if (crossSessionMemories.isNotEmpty()) {
+                append("\nRelevant memory from the user's other saved conversations:\n")
+                for (memory in crossSessionMemories.take(8)) {
+                    append("- ").append(memory).append('\n')
+                }
             }
             val relevantLearned = learnedMemories.takeLast(5)
             if (relevantLearned.isNotEmpty()) {
@@ -139,7 +146,8 @@ object OllamaClient {
         model: String = DEFAULT_MODEL,
         temperature: Double = 0.7,
         topP: Double = 0.9,
-        endpointUrl: String = DEFAULT_ENDPOINT_URL
+        endpointUrl: String = DEFAULT_ENDPOINT_URL,
+        crossSessionMemories: List<String> = emptyList()
     ): Flow<OllamaStreamEvent> = flow {
         val resolvedModel = model.trim().ifEmpty { DEFAULT_MODEL }
         val chatUrl = resolveChatEndpoint(endpointUrl)
@@ -166,7 +174,8 @@ object OllamaClient {
                 model = resolvedModel,
                 temperature = temperature,
                 topP = topP,
-                stream = true
+                stream = true,
+                crossSessionMemories = crossSessionMemories
             ).toString()
 
             conn.outputStream.use { os ->
@@ -248,7 +257,8 @@ object OllamaClient {
         temperature: Double = 0.7,
         topP: Double = 0.9,
         stream: Boolean = false,
-        endpointUrl: String = DEFAULT_ENDPOINT_URL
+        endpointUrl: String = DEFAULT_ENDPOINT_URL,
+        crossSessionMemories: List<String> = emptyList()
     ): String? {
         var conn: HttpURLConnection? = null
         return try {
@@ -272,6 +282,13 @@ object OllamaClient {
 
             val fullPrompt = buildString {
                 append(instruction)
+                if (crossSessionMemories.isNotEmpty()) {
+                    append("\nRelevant memory from the user's other saved conversations:\n")
+                    for (memory in crossSessionMemories.take(8)) {
+                        append("- ").append(memory).append('\n')
+                    }
+                    append('\n')
+                }
                 for (entry in history) {
                     append(entry).append('\n')
                 }

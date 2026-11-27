@@ -74,6 +74,9 @@ fun ParametersDialog(
     var geminiEnabled by remember(useGeminiReasoning) {
         mutableStateOf(useGeminiReasoning)
     }
+    var crossSessionMemoryEnabled by remember(parameters) {
+        mutableStateOf(parameters[DBHelper.KEY_CROSS_SESSION_MEMORY]?.toBooleanStrictOrNull() ?: true)
+    }
     var webSearchEnabled by remember(parameters) {
         mutableStateOf(parameters[DBHelper.KEY_WEB_SEARCH_ENABLED]?.toBooleanStrictOrNull() ?: true)
     }
@@ -126,6 +129,29 @@ fun ParametersDialog(
                         checked = geminiEnabled,
                         onCheckedChange = { geminiEnabled = it },
                         modifier = Modifier.testTag("gemini_reasoning_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Remember Across History",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Share context from other saved chats with AI models",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = crossSessionMemoryEnabled,
+                        onCheckedChange = { crossSessionMemoryEnabled = it },
+                        modifier = Modifier.testTag("cross_session_memory_switch")
                     )
                 }
 
@@ -399,6 +425,7 @@ fun ParametersDialog(
             Button(
                 onClick = {
                     onToggleGeminiReasoning(geminiEnabled)
+                    onUpdateParameter(DBHelper.KEY_CROSS_SESSION_MEMORY, crossSessionMemoryEnabled.toString())
                     onUpdateParameter(DBHelper.KEY_WEB_SEARCH_ENABLED, webSearchEnabled.toString())
                     if (model.isNotBlank()) {
                         onUpdateParameter(DBHelper.KEY_MODEL, model.trim())
