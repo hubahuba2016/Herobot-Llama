@@ -86,6 +86,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.herobot.R
 import com.herobot.ai.AssistantRole
+import com.herobot.ai.LocalAccelerator
+import com.herobot.ai.LocalModelStatus
 import com.herobot.ai.ReasoningSelection
 import com.herobot.ui.components.AccountDialog
 import com.herobot.ui.components.ChatMessageRow
@@ -116,6 +118,13 @@ fun ChatScreen(
     onOpenParametersDialog: () -> Unit,
     onDismissParametersDialog: () -> Unit,
     onUpdateParameter: (String, String) -> Unit,
+    onDownloadLocalModel: (String, String) -> Unit,
+    onCancelLocalDownload: () -> Unit,
+    onImportLocalModel: () -> Unit,
+    onLoadLocalModel: () -> Unit,
+    onUnloadLocalModel: () -> Unit,
+    onDeleteLocalModel: () -> Unit,
+    onSelectLocalAccelerator: (LocalAccelerator) -> Unit,
     onOpenAccountDialog: () -> Unit,
     onDismissAccountDialog: () -> Unit,
     onSavePersonalApiKey: (String) -> Unit,
@@ -144,8 +153,20 @@ fun ChatScreen(
         ParametersDialog(
             useGeminiReasoning = uiState.useGeminiReasoning,
             parameters = uiState.parameters,
+            localModelStatus = uiState.localModelStatus,
+            onDeviceEngineState = uiState.onDeviceEngineState,
+            localAccelerator = uiState.localAccelerator,
+            initialModelUrl = uiState.localModelUrl,
+            initialHfToken = uiState.huggingFaceToken,
             onToggleGeminiReasoning = onToggleGeminiReasoning,
             onUpdateParameter = onUpdateParameter,
+            onDownloadLocalModel = onDownloadLocalModel,
+            onCancelDownload = onCancelLocalDownload,
+            onImportLocalModel = onImportLocalModel,
+            onLoadLocalModel = onLoadLocalModel,
+            onUnloadLocalModel = onUnloadLocalModel,
+            onDeleteLocalModel = onDeleteLocalModel,
+            onSelectAccelerator = onSelectLocalAccelerator,
             onDismiss = onDismissParametersDialog
         )
     }
@@ -203,8 +224,14 @@ fun ChatScreen(
                                 Text(
                                     text = when {
                                         uiState.isSeeding -> "Loading knowledge base…"
-                                        uiState.isUsingOllamaFallback -> "Ollama Fallback • ${uiState.activeModelName}"
-                                        uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeModelName} • $quotaLabel"
+                                        uiState.isUsingOnDeviceGemma ->
+                                            "On-Device • Gemma 3 1B (${uiState.localAccelerator.label})"
+                                        uiState.isUsingOllamaFallback ->
+                                            "Ollama Fallback • ${uiState.activeModelName}"
+                                        uiState.useGeminiReasoning ->
+                                            "${uiState.activeRole.title} • ${uiState.activeModelName} • $quotaLabel"
+                                        uiState.localModelStatus is LocalModelStatus.Ready ->
+                                            "Local • Gemma 3 1B Ready • ${uiState.knowledgeCount} Q&A"
                                         else -> "Local Engine • ${uiState.knowledgeCount} Q&A pairs"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
@@ -306,10 +333,12 @@ fun ChatScreen(
                         EmptyChatWelcome(
                             userDisplayName = uiState.userDisplayName,
                             hasPersonalApiKey = uiState.hasPersonalApiKey,
+                            isLocalGemmaReady = uiState.localModelStatus is LocalModelStatus.Ready,
                             activeRole = uiState.activeRole,
                             isAuto = uiState.reasoningSelection is ReasoningSelection.Auto,
                             onPromptClick = onSendInput,
                             onOpenAccountDialog = onOpenAccountDialog,
+                            onOpenParametersDialog = onOpenParametersDialog,
                             modifier = Modifier.align(Alignment.Center)
                         )
                     } else {
@@ -371,12 +400,14 @@ fun ChatScreen(
                                         Text("Add Key")
                                     }
                                 }
-                                if (errorMsg.contains("Ollama", ignoreCase = true)) {
+                                if (errorMsg.contains("Ollama", ignoreCase = true) ||
+                                    errorMsg.contains("Gemma", ignoreCase = true)
+                                ) {
                                     TextButton(
                                         onClick = onOpenParametersDialog,
                                         modifier = Modifier.testTag("error_ollama_settings_button")
                                     ) {
-                                        Text("Settings")
+                                        Text("Local AI")
                                     }
                                 }
                                 if (uiState.lastFailedPrompt != null) {
@@ -421,6 +452,8 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = when {
+                                uiState.isUsingOnDeviceGemma ->
+                                    "On-Device Gemma 3 1B (${uiState.localAccelerator.label}) is reasoning…"
                                 uiState.isUsingOllamaFallback ->
                                     "Gemini unavailable • Ollama (${uiState.activeModelName}) is reasoning…"
                                 uiState.useGeminiReasoning ->
@@ -592,10 +625,12 @@ private fun RoleSelectorBar(
 private fun EmptyChatWelcome(
     userDisplayName: String,
     hasPersonalApiKey: Boolean,
+    isLocalGemmaReady: Boolean,
     activeRole: AssistantRole,
     isAuto: Boolean,
     onPromptClick: (String) -> Unit,
     onOpenAccountDialog: () -> Unit,
+    onOpenParametersDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -637,6 +672,14 @@ private fun EmptyChatWelcome(
                 modifier = Modifier.testTag("welcome_add_key_button")
             ) {
                 Text("Optional: Add your own Gemini API key")
+            }
+        }
+        if (!isLocalGemmaReady) {
+            TextButton(
+                onClick = onOpenParametersDialog,
+                modifier = Modifier.testTag("welcome_download_gemma_button")
+            ) {
+                Text("Download On-Device Gemma 3 1B for offline fallback")
             }
         }
         Spacer(modifier = Modifier.height(12.dp))

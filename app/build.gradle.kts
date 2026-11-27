@@ -79,6 +79,7 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services)
     implementation(libs.googleid)
+    implementation(libs.litertlm.android)
 
     testImplementation(libs.junit)
     testImplementation(libs.org.json)

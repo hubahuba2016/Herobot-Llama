@@ -25,6 +25,8 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
+import com.herobot.ai.LocalModelManager
+import com.herobot.ai.OnDeviceGemmaService
 import com.herobot.ai.configureAppCheck
 import com.herobot.auth.attemptAutoSignIn
 import com.herobot.auth.authStateFlow
@@ -128,11 +130,15 @@ private fun AuthenticatedChatHost(
                 )
                 val repository = UserChatRepository(db)
                 val apiKeyStore = UserApiKeyStore(app)
+                val localModelManager = LocalModelManager(app)
+                val onDeviceGemmaService = OnDeviceGemmaService(app)
 
                 ChatViewModel(
                     localEngine = localEngine,
                     userRepository = repository,
                     apiKeyStore = apiKeyStore,
+                    localModelManager = localModelManager,
+                    onDeviceGemmaService = onDeviceGemmaService,
                     currentUserId = user.uid,
                     userDisplayName = user.displayName,
                     userEmail = user.email,
@@ -143,6 +149,14 @@ private fun AuthenticatedChatHost(
     )
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    val openModelFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importOnDeviceGemma(uri)
+        }
+    }
 
     val speechRecognizerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -199,6 +213,13 @@ private fun AuthenticatedChatHost(
         onOpenParametersDialog = viewModel::openParametersDialog,
         onDismissParametersDialog = viewModel::dismissParametersDialog,
         onUpdateParameter = viewModel::updateParameter,
+        onDownloadLocalModel = viewModel::downloadOnDeviceGemma,
+        onCancelLocalDownload = viewModel::cancelOnDeviceDownload,
+        onImportLocalModel = { openModelFileLauncher.launch(arrayOf("*/*")) },
+        onLoadLocalModel = viewModel::loadOnDeviceGemma,
+        onUnloadLocalModel = viewModel::unloadOnDeviceGemma,
+        onDeleteLocalModel = viewModel::deleteOnDeviceGemma,
+        onSelectLocalAccelerator = viewModel::setLocalAccelerator,
         onOpenAccountDialog = viewModel::openAccountDialog,
         onDismissAccountDialog = viewModel::dismissAccountDialog,
         onSavePersonalApiKey = viewModel::savePersonalApiKey,

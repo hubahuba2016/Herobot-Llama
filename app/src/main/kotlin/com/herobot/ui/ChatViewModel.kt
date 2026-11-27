@@ -1,5 +1,6 @@
 package com.herobot.ui
 
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,6 +9,12 @@ import com.herobot.ai.AssistantRole
 import com.herobot.ai.GeminiChatService
 import com.herobot.ai.GeminiModelRouter
 import com.herobot.ai.GeminiStreamEvent
+import com.herobot.ai.LocalAccelerator
+import com.herobot.ai.LocalModelManager
+import com.herobot.ai.LocalModelStatus
+import com.herobot.ai.OnDeviceEngineState
+import com.herobot.ai.OnDeviceGemmaService
+import com.herobot.ai.OnDeviceStreamEvent
 import com.herobot.ai.ReasoningSelection
 import com.herobot.data.DBHelper
 import com.herobot.data.UserApiKeyStore
@@ -42,6 +49,7 @@ data class ChatUiState(
     val isTtsEnabled: Boolean = true,
     val useGeminiReasoning: Boolean = true,
     val isUsingOllamaFallback: Boolean = false,
+    val isUsingOnDeviceGemma: Boolean = false,
     val reasoningSelection: ReasoningSelection = ReasoningSelection.Auto,
     val activeRole: AssistantRole = AssistantRole.GENERAL,
     val activeModelName: String = AssistantRole.GENERAL.modelName,
@@ -54,13 +62,20 @@ data class ChatUiState(
     val userDisplayName: String = "HeroBot User",
     val userEmail: String? = null,
     val hasPersonalApiKey: Boolean = false,
-    val personalApiKey: String = ""
+    val personalApiKey: String = "",
+    val localModelStatus: LocalModelStatus = LocalModelStatus.NotDownloaded,
+    val onDeviceEngineState: OnDeviceEngineState = OnDeviceEngineState.Unloaded,
+    val localAccelerator: LocalAccelerator = LocalAccelerator.CPU,
+    val localModelUrl: String = LocalModelManager.DEFAULT_DOWNLOAD_URL,
+    val huggingFaceToken: String = ""
 )
 
 class ChatViewModel(
     private val localEngine: ChatbotEngine,
     private val userRepository: UserChatRepository,
     private val apiKeyStore: UserApiKeyStore,
+    private val localModelManager: LocalModelManager,
+    private val onDeviceGemmaService: OnDeviceGemmaService,
     private val currentUserId: String,
     userDisplayName: String?,
     userEmail: String?,
@@ -84,7 +99,12 @@ class ChatViewModel(
                 ?: "HeroBot User",
             userEmail = userEmail,
             hasPersonalApiKey = initialPersonalKey.isNotEmpty(),
-            personalApiKey = initialPersonalKey
+            personalApiKey = initialPersonalKey,
+            localModelStatus = localModelManager.status.value,
+            onDeviceEngineState = onDeviceGemmaService.engineState.value,
+            localAccelerator = localModelManager.getSavedAccelerator(),
+            localModelUrl = localModelManager.getSavedDownloadUrl(),
+            huggingFaceToken = localModelManager.getSavedHfToken()
         )
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -108,6 +128,18 @@ class ChatViewModel(
                     knowledgeCount = count,
                     parameters = params
                 )
+            }
+        }
+
+        viewModelScope.launch {
+            localModelManager.status.collect { status ->
+                _uiState.update { it.copy(localModelStatus = status) }
+            }
+        }
+
+        viewModelScope.launch {
+            onDeviceGemmaService.engineState.collect { engineState ->
+                _uiState.update { it.copy(onDeviceEngineState = engineState) }
             }
         }
 
@@ -255,6 +287,7 @@ class ChatViewModel(
             state.copy(
                 isProcessing = true,
                 isUsingOllamaFallback = false,
+                isUsingOnDeviceGemma = false,
                 activeRole = resolvedRole,
                 activeModelName = resolvedRole.modelName,
                 errorMessage = null,
@@ -319,6 +352,8 @@ class ChatViewModel(
                         _uiState.update { state ->
                             state.copy(
                                 isProcessing = false,
+                                isUsingOllamaFallback = false,
+                                isUsingOnDeviceGemma = false,
                                 activeRole = event.role,
                                 activeModelName = event.modelName,
                                 errorMessage = null,
@@ -350,13 +385,14 @@ class ChatViewModel(
                                 state.copy(
                                     isProcessing = false,
                                     isUsingOllamaFallback = false,
+                                    isUsingOnDeviceGemma = false,
                                     errorMessage = event.message,
                                     lastFailedPrompt = prompt
                                 )
                             }
                             refreshVisibleMessages()
                         } else {
-                            fallbackToOllama(
+                            fallbackToLocalAi(
                                 prompt = prompt,
                                 localHint = localHint,
                                 geminiError = event.message,
@@ -367,6 +403,178 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    private suspend fun fallbackToLocalAi(
+        prompt: String,
+        localHint: String?,
+        geminiError: String,
+        placeholderBotMessage: ChatMessage
+    ) {
+        val readyModelPath = localModelManager.getReadyModelPath()
+        if (readyModelPath != null) {
+            val onDeviceSucceeded = runOnDeviceGemmaFallback(
+                modelPath = readyModelPath,
+                prompt = prompt,
+                localHint = localHint,
+                placeholderBotMessage = placeholderBotMessage,
+                announceToast = true
+            )
+            if (onDeviceSucceeded) return
+        }
+
+        fallbackToOllama(
+            prompt = prompt,
+            localHint = localHint,
+            geminiError = geminiError,
+            placeholderBotMessage = placeholderBotMessage
+        )
+    }
+
+    private suspend fun runOnDeviceGemmaFallback(
+        modelPath: String,
+        prompt: String,
+        localHint: String?,
+        placeholderBotMessage: ChatMessage,
+        announceToast: Boolean
+    ): Boolean {
+        val params = _uiState.value.parameters
+        val temperature = params[DBHelper.KEY_TEMPERATURE]?.toDoubleOrNull() ?: 0.7
+        val topP = params[DBHelper.KEY_TOP_P]?.toDoubleOrNull() ?: 0.9
+        val accelerator = _uiState.value.localAccelerator
+
+        if (announceToast) {
+            _toastEvents.tryEmit("Gemini unavailable — using On-Device Gemma 3 1B")
+        }
+
+        val priorHistory = persistedMessages
+            .filter { !it.isStreaming && it.text.isNotBlank() }
+            .takeLast(6)
+            .map { msg ->
+                val role = if (msg.type == ChatMessage.Type.USER) "User" else "HeroBot"
+                role to msg.text.trim()
+            }
+
+        streamingBotMessage = placeholderBotMessage.copy(
+            text = "",
+            source = BotResponse.Source.LLM,
+            modelId = LocalModelManager.MODEL_ID,
+            roleTitle = ON_DEVICE_GEMMA_ROLE,
+            isStreaming = true
+        )
+        _uiState.update { state ->
+            state.copy(
+                isUsingOnDeviceGemma = true,
+                isUsingOllamaFallback = false,
+                activeModelName = LocalModelManager.MODEL_ID
+            )
+        }
+        refreshVisibleMessages()
+
+        var succeeded = false
+        onDeviceGemmaService.sendMessageStream(
+            modelPath = modelPath,
+            accelerator = accelerator,
+            userPrompt = prompt,
+            priorHistory = priorHistory,
+            learnedMemories = userLearnedQa.entries.map { it.key to it.value }.takeLast(4),
+            localHint = localHint,
+            temperature = temperature,
+            topP = topP
+        ).collect { event ->
+            when (event) {
+                is OnDeviceStreamEvent.Started -> {
+                    streamingBotMessage = streamingBotMessage?.copy(
+                        source = BotResponse.Source.LLM,
+                        modelId = event.modelName,
+                        roleTitle = ON_DEVICE_GEMMA_ROLE
+                    )
+                    _uiState.update { state ->
+                        state.copy(
+                            isUsingOnDeviceGemma = true,
+                            activeModelName = event.modelName,
+                            localAccelerator = event.accelerator
+                        )
+                    }
+                    refreshVisibleMessages()
+                }
+
+                is OnDeviceStreamEvent.Chunk -> {
+                    streamingBotMessage = streamingBotMessage?.copy(
+                        text = event.accumulatedText,
+                        source = BotResponse.Source.LLM,
+                        modelId = event.modelName,
+                        roleTitle = ON_DEVICE_GEMMA_ROLE,
+                        isStreaming = true
+                    )
+                    refreshVisibleMessages()
+                }
+
+                is OnDeviceStreamEvent.Completed -> {
+                    val completedMsg = (streamingBotMessage ?: placeholderBotMessage).copy(
+                        text = event.fullText,
+                        source = BotResponse.Source.LLM,
+                        modelId = event.modelName,
+                        roleTitle = ON_DEVICE_GEMMA_ROLE,
+                        isStreaming = false
+                    )
+                    streamingBotMessage = null
+                    geminiService.appendTurn(prompt, event.fullText)
+                    _uiState.update { state ->
+                        state.copy(
+                            isProcessing = false,
+                            isUsingOnDeviceGemma = false,
+                            isUsingOllamaFallback = false,
+                            activeModelName = event.modelName,
+                            errorMessage = null,
+                            lastFailedPrompt = null
+                        )
+                    }
+
+                    val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
+                    val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
+                    if (saveResult.isFailure) {
+                        persistedMessages = persistedMessages + completedMsg
+                    }
+                    refreshVisibleMessages()
+
+                    if (_uiState.value.isTtsEnabled) {
+                        _ttsEvents.tryEmit(event.fullText)
+                    }
+                    succeeded = true
+                }
+
+                is OnDeviceStreamEvent.Error -> {
+                    Log.w(TAG, "On-device Gemma 3 1B failed: ${event.message}")
+                    val partial = streamingBotMessage?.takeIf { it.text.isNotBlank() }?.copy(
+                        isStreaming = false
+                    )
+                    streamingBotMessage = null
+                    if (partial != null) {
+                        val docId = "b_${partial.timestampMillis}_${partial.id}"
+                        val saveResult = userRepository.saveMessage(currentUserId, docId, partial)
+                        if (saveResult.isFailure) {
+                            persistedMessages = persistedMessages + partial
+                        }
+                        _uiState.update { state ->
+                            state.copy(
+                                isProcessing = false,
+                                isUsingOnDeviceGemma = false,
+                                errorMessage = event.message,
+                                lastFailedPrompt = prompt
+                            )
+                        }
+                        refreshVisibleMessages()
+                        succeeded = true
+                    } else {
+                        _uiState.update { state ->
+                            state.copy(isUsingOnDeviceGemma = false)
+                        }
+                    }
+                }
+            }
+        }
+        return succeeded
     }
 
     private suspend fun fallbackToOllama(
@@ -387,7 +595,7 @@ class ChatViewModel(
         val temperature = params[DBHelper.KEY_TEMPERATURE]?.toDoubleOrNull() ?: 0.7
         val topP = params[DBHelper.KEY_TOP_P]?.toDoubleOrNull() ?: 0.9
 
-        _toastEvents.tryEmit("Gemini unavailable — using Ollama ($ollamaModel)")
+        _toastEvents.tryEmit("Gemini unavailable — trying Ollama ($ollamaModel)")
 
         val historySnapshot = persistedMessages
             .filter { !it.isStreaming && it.text.isNotBlank() }
@@ -409,6 +617,7 @@ class ChatViewModel(
         _uiState.update { state ->
             state.copy(
                 isUsingOllamaFallback = true,
+                isUsingOnDeviceGemma = false,
                 activeModelName = ollamaModel
             )
         }
@@ -465,6 +674,7 @@ class ChatViewModel(
                         state.copy(
                             isProcessing = false,
                             isUsingOllamaFallback = false,
+                            isUsingOnDeviceGemma = false,
                             activeModelName = ollamaEvent.modelName,
                             errorMessage = null,
                             lastFailedPrompt = null
@@ -498,6 +708,7 @@ class ChatViewModel(
                             state.copy(
                                 isProcessing = false,
                                 isUsingOllamaFallback = false,
+                                isUsingOnDeviceGemma = false,
                                 errorMessage = ollamaEvent.message,
                                 lastFailedPrompt = prompt
                             )
@@ -506,7 +717,6 @@ class ChatViewModel(
                         return@collect
                     }
 
-                    // If Ollama is also unreachable, check offline local math/DB/greetings before failing
                     val offlineReply = withContext(Dispatchers.IO) {
                         localEngine.reply(prompt, allowLocalLlm = false)
                     }
@@ -522,6 +732,7 @@ class ChatViewModel(
                             state.copy(
                                 isProcessing = false,
                                 isUsingOllamaFallback = false,
+                                isUsingOnDeviceGemma = false,
                                 errorMessage = null,
                                 lastFailedPrompt = null
                             )
@@ -536,11 +747,17 @@ class ChatViewModel(
                             _ttsEvents.tryEmit(offlineReply.text)
                         }
                     } else {
+                        val hintMsg = if (localModelManager.getReadyModelPath() == null) {
+                            "Gemini unavailable ($geminiError). Download On-Device Gemma 3 1B in Settings or start Ollama (${ollamaModel})."
+                        } else {
+                            "Gemini unavailable ($geminiError). Ollama fallback failed: ${ollamaEvent.message}"
+                        }
                         _uiState.update { state ->
                             state.copy(
                                 isProcessing = false,
                                 isUsingOllamaFallback = false,
-                                errorMessage = "Gemini unavailable ($geminiError). Ollama fallback failed: ${ollamaEvent.message}",
+                                isUsingOnDeviceGemma = false,
+                                errorMessage = hintMsg,
                                 lastFailedPrompt = prompt
                             )
                         }
@@ -556,39 +773,138 @@ class ChatViewModel(
             state.copy(
                 isProcessing = true,
                 isUsingOllamaFallback = false,
+                isUsingOnDeviceGemma = false,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
         }
 
-        viewModelScope.launch {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = viewModelScope.launch {
             val userTaughtAnswer = userLearnedQa[NLPHelper.normalize(prompt)]
-            val response = if (userTaughtAnswer != null) {
-                BotResponse(text = userTaughtAnswer, source = BotResponse.Source.DATABASE)
-            } else {
-                withContext(Dispatchers.IO) {
-                    localEngine.reply(prompt)
-                }
+            if (userTaughtAnswer != null) {
+                deliverLocalBotResponse(
+                    BotResponse(text = userTaughtAnswer, source = BotResponse.Source.DATABASE)
+                )
+                return@launch
             }
 
-            val botMessage = ChatMessage(
-                text = response.text,
-                type = ChatMessage.Type.BOT,
-                source = response.source,
-                modelId = response.modelId,
-                roleTitle = response.roleTitle
-            )
-            _uiState.update { it.copy(isProcessing = false) }
-            val docId = "b_${botMessage.timestampMillis}_${botMessage.id}"
-            val saveResult = userRepository.saveMessage(currentUserId, docId, botMessage)
-            if (saveResult.isFailure) {
-                persistedMessages = persistedMessages + botMessage
-                refreshVisibleMessages()
+            // Try built-in math, local Q&A, greetings, or web search first without blocking on LLM
+            val quickResponse = withContext(Dispatchers.IO) {
+                localEngine.reply(prompt, allowLocalLlm = false)
             }
-            if (_uiState.value.isTtsEnabled) {
-                _ttsEvents.tryEmit(response.text)
+            if (quickResponse.source != BotResponse.Source.NONE) {
+                deliverLocalBotResponse(quickResponse)
+                return@launch
+            }
+
+            // If On-Device Gemma 3 1B (.litertlm) is downloaded, run it directly inside the app
+            val readyModelPath = localModelManager.getReadyModelPath()
+            if (readyModelPath != null) {
+                val placeholder = ChatMessage(
+                    text = "",
+                    type = ChatMessage.Type.BOT,
+                    source = BotResponse.Source.LLM,
+                    modelId = LocalModelManager.MODEL_ID,
+                    roleTitle = ON_DEVICE_GEMMA_ROLE,
+                    isStreaming = true
+                )
+                val ranOnDevice = runOnDeviceGemmaFallback(
+                    modelPath = readyModelPath,
+                    prompt = prompt,
+                    localHint = null,
+                    placeholderBotMessage = placeholder,
+                    announceToast = false
+                )
+                if (ranOnDevice) return@launch
+            }
+
+            // Otherwise try external Ollama server or return final local response
+            val fullLocalResponse = withContext(Dispatchers.IO) {
+                localEngine.reply(prompt, allowLocalLlm = true)
+            }
+            deliverLocalBotResponse(fullLocalResponse)
+        }
+    }
+
+    private suspend fun deliverLocalBotResponse(response: BotResponse) {
+        val botMessage = ChatMessage(
+            text = response.text,
+            type = ChatMessage.Type.BOT,
+            source = response.source,
+            modelId = response.modelId,
+            roleTitle = response.roleTitle
+        )
+        _uiState.update { it.copy(isProcessing = false, isUsingOnDeviceGemma = false) }
+        val docId = "b_${botMessage.timestampMillis}_${botMessage.id}"
+        val saveResult = userRepository.saveMessage(currentUserId, docId, botMessage)
+        if (saveResult.isFailure) {
+            persistedMessages = persistedMessages + botMessage
+            refreshVisibleMessages()
+        }
+        if (_uiState.value.isTtsEnabled) {
+            _ttsEvents.tryEmit(response.text)
+        }
+    }
+
+    fun downloadOnDeviceGemma(url: String, hfToken: String) {
+        _uiState.update {
+            it.copy(
+                localModelUrl = url.trim().ifEmpty { LocalModelManager.DEFAULT_DOWNLOAD_URL },
+                huggingFaceToken = hfToken.trim()
+            )
+        }
+        localModelManager.startDownload(url, hfToken)
+    }
+
+    fun importOnDeviceGemma(uri: Uri) {
+        localModelManager.importFromUri(uri)
+    }
+
+    fun cancelOnDeviceDownload() {
+        localModelManager.cancelDownload()
+    }
+
+    fun deleteOnDeviceGemma() {
+        viewModelScope.launch {
+            onDeviceGemmaService.unload()
+            localModelManager.deleteModel()
+            _toastEvents.tryEmit("Removed on-device Gemma 3 1B model")
+        }
+    }
+
+    fun setLocalAccelerator(accelerator: LocalAccelerator) {
+        localModelManager.saveAccelerator(accelerator)
+        _uiState.update { it.copy(localAccelerator = accelerator) }
+    }
+
+    fun loadOnDeviceGemma() {
+        val path = localModelManager.getReadyModelPath() ?: run {
+            _toastEvents.tryEmit("Download or import Gemma 3 1B first")
+            return
+        }
+        viewModelScope.launch {
+            val params = _uiState.value.parameters
+            val temperature = params[DBHelper.KEY_TEMPERATURE]?.toDoubleOrNull() ?: 0.7
+            val topP = params[DBHelper.KEY_TOP_P]?.toDoubleOrNull() ?: 0.9
+            val result = onDeviceGemmaService.loadModel(
+                modelPath = path,
+                accelerator = _uiState.value.localAccelerator,
+                temperature = temperature,
+                topP = topP
+            )
+            result.onSuccess { activeAccel ->
+                _uiState.update { it.copy(localAccelerator = activeAccel) }
+                _toastEvents.tryEmit("On-device Gemma 3 1B ready (${activeAccel.label})")
+            }.onFailure { err ->
+                _toastEvents.tryEmit(err.localizedMessage ?: "Failed to load on-device model")
             }
         }
+    }
+
+    fun unloadOnDeviceGemma() {
+        onDeviceGemmaService.unload()
+        _toastEvents.tryEmit("Unloaded on-device Gemma 3 1B")
     }
 
     fun retryLastFailedPrompt() {
@@ -620,6 +936,7 @@ class ChatViewModel(
             it.copy(
                 useGeminiReasoning = enabled,
                 isUsingOllamaFallback = false,
+                isUsingOnDeviceGemma = false,
                 errorMessage = null
             )
         }
@@ -747,10 +1064,12 @@ class ChatViewModel(
         streamingBotMessage = null
         pendingUserMessage = null
         geminiService.clearHistory()
+        onDeviceGemmaService.resetConversation()
         _uiState.update {
             it.copy(
                 isProcessing = false,
                 isUsingOllamaFallback = false,
+                isUsingOnDeviceGemma = false,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
@@ -768,10 +1087,17 @@ class ChatViewModel(
         activeGenerationJob?.cancel()
         streamingBotMessage = null
         pendingUserMessage = null
+        onDeviceGemmaService.unload()
+    }
+
+    override fun onCleared() {
+        onDeviceGemmaService.shutdown()
+        super.onCleared()
     }
 
     companion object {
         private const val TAG = "ChatVM"
         private const val OLLAMA_FALLBACK_ROLE = "Ollama Fallback"
+        private const val ON_DEVICE_GEMMA_ROLE = "On-Device Gemma"
     }
 }
