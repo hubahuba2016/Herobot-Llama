@@ -203,6 +203,7 @@ fun ChatScreen(
                                 Text(
                                     text = when {
                                         uiState.isSeeding -> "Loading knowledge base…"
+                                        uiState.isUsingOllamaFallback -> "Ollama Fallback • ${uiState.activeModelName}"
                                         uiState.useGeminiReasoning -> "${uiState.activeRole.title} • ${uiState.activeModelName} • $quotaLabel"
                                         else -> "Local Engine • ${uiState.knowledgeCount} Q&A pairs"
                                     },
@@ -370,6 +371,14 @@ fun ChatScreen(
                                         Text("Add Key")
                                     }
                                 }
+                                if (errorMsg.contains("Ollama", ignoreCase = true)) {
+                                    TextButton(
+                                        onClick = onOpenParametersDialog,
+                                        modifier = Modifier.testTag("error_ollama_settings_button")
+                                    ) {
+                                        Text("Settings")
+                                    }
+                                }
                                 if (uiState.lastFailedPrompt != null) {
                                     TextButton(
                                         onClick = onRetryError,
@@ -411,10 +420,13 @@ fun ChatScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (uiState.useGeminiReasoning) {
-                                "${uiState.activeRole.title} (${uiState.activeModelName}) is reasoning…"
-                            } else {
-                                "HeroBot is thinking…"
+                            text = when {
+                                uiState.isUsingOllamaFallback ->
+                                    "Gemini unavailable • Ollama (${uiState.activeModelName}) is reasoning…"
+                                uiState.useGeminiReasoning ->
+                                    "${uiState.activeRole.title} (${uiState.activeModelName}) is reasoning…"
+                                else ->
+                                    "HeroBot is thinking…"
                             },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

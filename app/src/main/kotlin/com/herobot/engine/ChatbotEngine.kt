@@ -60,7 +60,7 @@ class ChatbotEngine(
         }
     }
 
-    fun reply(input: String): BotResponse {
+    fun reply(input: String, allowLocalLlm: Boolean = true): BotResponse {
         ensureSeeded()
 
         val normalizedInput = NLPHelper.normalize(input)
@@ -186,9 +186,14 @@ class ChatbotEngine(
             }
         }
 
-        if (MathEngine.isMathematicsRequest(input)) {
-            askLocalLLM(input)?.let { llmReply ->
-                return BotResponse(llmReply, BotResponse.Source.LLM).also {
+        if (allowLocalLlm && MathEngine.isMathematicsRequest(input)) {
+            askLocalLLM(input)?.let { (llmReply, modelUsed) ->
+                return BotResponse(
+                    text = llmReply,
+                    source = BotResponse.Source.LLM,
+                    modelId = modelUsed,
+                    roleTitle = "Ollama"
+                ).also {
                     history.add("HeroBot: ${it.text}")
                 }
             }
@@ -208,9 +213,14 @@ class ChatbotEngine(
         }
 
         // 5. Local LLM prompt for general conversation
-        if (shouldPreferLocalPromptBeforeWeb(normalizedInput)) {
-            askLocalLLM(normalizedInput)?.let { llmReply ->
-                return BotResponse(llmReply, BotResponse.Source.LLM).also {
+        if (allowLocalLlm && shouldPreferLocalPromptBeforeWeb(normalizedInput)) {
+            askLocalLLM(normalizedInput)?.let { (llmReply, modelUsed) ->
+                return BotResponse(
+                    text = llmReply,
+                    source = BotResponse.Source.LLM,
+                    modelId = modelUsed,
+                    roleTitle = "Ollama"
+                ).also {
                     history.add("HeroBot: ${it.text}")
                 }
             }
@@ -304,20 +314,29 @@ class ChatbotEngine(
     private fun isWebSearchEnabled(): Boolean =
         db?.getParameter(DBHelper.KEY_WEB_SEARCH_ENABLED, "true")?.toBooleanStrictOrNull() ?: true
 
-    private fun askLocalLLM(prompt: String): String? {
-        val model = db?.getParameter(DBHelper.KEY_MODEL, "llama3.2:1b") ?: "llama3.2:1b"
+    private fun askLocalLLM(prompt: String): Pair<String, String>? {
+        val model = db?.getParameter(DBHelper.KEY_MODEL, OllamaClient.DEFAULT_MODEL)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: OllamaClient.DEFAULT_MODEL
+        val endpointUrl = db?.getParameter(DBHelper.KEY_OLLAMA_URL, OllamaClient.DEFAULT_ENDPOINT_URL)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: OllamaClient.DEFAULT_ENDPOINT_URL
         val temperature = db?.getParameter(DBHelper.KEY_TEMPERATURE, "0.7")?.toDoubleOrNull() ?: 0.7
         val topP = db?.getParameter(DBHelper.KEY_TOP_P, "0.9")?.toDoubleOrNull() ?: 0.9
         val stream = db?.getParameter(DBHelper.KEY_STREAM, "false")?.toBooleanStrictOrNull() ?: false
 
-        return OllamaClient.askLocalLLM(
+        val reply = OllamaClient.askLocalLLM(
             prompt = prompt,
             history = history.getHistory(),
             model = model,
             temperature = temperature,
             topP = topP,
-            stream = stream
-        )
+            stream = stream,
+            endpointUrl = endpointUrl
+        ) ?: return null
+        return reply to model
     }
 
     companion object {

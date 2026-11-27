@@ -9,11 +9,15 @@ import com.herobot.ai.GeminiChatService
 import com.herobot.ai.GeminiModelRouter
 import com.herobot.ai.GeminiStreamEvent
 import com.herobot.ai.ReasoningSelection
+import com.herobot.data.DBHelper
 import com.herobot.data.UserApiKeyStore
 import com.herobot.data.remote.UserChatRepository
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
+import com.herobot.engine.OllamaChatTurn
+import com.herobot.engine.OllamaClient
+import com.herobot.engine.OllamaStreamEvent
 import com.herobot.model.BotResponse
 import com.herobot.model.ChatMessage
 import kotlinx.coroutines.CancellationException
@@ -37,6 +41,7 @@ data class ChatUiState(
     val knowledgeCount: Int = 0,
     val isTtsEnabled: Boolean = true,
     val useGeminiReasoning: Boolean = true,
+    val isUsingOllamaFallback: Boolean = false,
     val reasoningSelection: ReasoningSelection = ReasoningSelection.Auto,
     val activeRole: AssistantRole = AssistantRole.GENERAL,
     val activeModelName: String = AssistantRole.GENERAL.modelName,
@@ -249,6 +254,7 @@ class ChatViewModel(
         _uiState.update { state ->
             state.copy(
                 isProcessing = true,
+                isUsingOllamaFallback = false,
                 activeRole = resolvedRole,
                 activeModelName = resolvedRole.modelName,
                 errorMessage = null,
@@ -336,15 +342,205 @@ class ChatViewModel(
                         val partial = streamingBotMessage?.takeIf { it.text.isNotBlank() }?.copy(
                             isStreaming = false
                         )
-                        streamingBotMessage = null
                         if (partial != null) {
+                            streamingBotMessage = null
                             val docId = "b_${partial.timestampMillis}_${partial.id}"
                             userRepository.saveMessage(currentUserId, docId, partial)
+                            _uiState.update { state ->
+                                state.copy(
+                                    isProcessing = false,
+                                    isUsingOllamaFallback = false,
+                                    errorMessage = event.message,
+                                    lastFailedPrompt = prompt
+                                )
+                            }
+                            refreshVisibleMessages()
+                        } else {
+                            fallbackToOllama(
+                                prompt = prompt,
+                                localHint = localHint,
+                                geminiError = event.message,
+                                placeholderBotMessage = placeholderBotMessage
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun fallbackToOllama(
+        prompt: String,
+        localHint: String?,
+        geminiError: String,
+        placeholderBotMessage: ChatMessage
+    ) {
+        val params = _uiState.value.parameters
+        val ollamaModel = params[DBHelper.KEY_MODEL]
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: OllamaClient.DEFAULT_MODEL
+        val ollamaUrl = params[DBHelper.KEY_OLLAMA_URL]
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: OllamaClient.DEFAULT_ENDPOINT_URL
+        val temperature = params[DBHelper.KEY_TEMPERATURE]?.toDoubleOrNull() ?: 0.7
+        val topP = params[DBHelper.KEY_TOP_P]?.toDoubleOrNull() ?: 0.9
+
+        _toastEvents.tryEmit("Gemini unavailable — using Ollama ($ollamaModel)")
+
+        val historySnapshot = persistedMessages
+            .filter { !it.isStreaming && it.text.isNotBlank() }
+            .takeLast(16)
+            .map { msg ->
+                OllamaChatTurn(
+                    role = if (msg.type == ChatMessage.Type.USER) "user" else "assistant",
+                    text = msg.text.trim()
+                )
+            }
+
+        streamingBotMessage = placeholderBotMessage.copy(
+            text = "",
+            source = BotResponse.Source.LLM,
+            modelId = ollamaModel,
+            roleTitle = OLLAMA_FALLBACK_ROLE,
+            isStreaming = true
+        )
+        _uiState.update { state ->
+            state.copy(
+                isUsingOllamaFallback = true,
+                activeModelName = ollamaModel
+            )
+        }
+        refreshVisibleMessages()
+
+        OllamaClient.streamChat(
+            userPrompt = prompt,
+            history = historySnapshot,
+            learnedMemories = userLearnedQa.entries.map { it.key to it.value }.takeLast(5),
+            localHint = localHint,
+            model = ollamaModel,
+            temperature = temperature,
+            topP = topP,
+            endpointUrl = ollamaUrl
+        ).collect { ollamaEvent ->
+            when (ollamaEvent) {
+                is OllamaStreamEvent.Started -> {
+                    streamingBotMessage = streamingBotMessage?.copy(
+                        source = BotResponse.Source.LLM,
+                        modelId = ollamaEvent.modelName,
+                        roleTitle = OLLAMA_FALLBACK_ROLE
+                    )
+                    _uiState.update { state ->
+                        state.copy(
+                            isUsingOllamaFallback = true,
+                            activeModelName = ollamaEvent.modelName
+                        )
+                    }
+                    refreshVisibleMessages()
+                }
+
+                is OllamaStreamEvent.Chunk -> {
+                    streamingBotMessage = streamingBotMessage?.copy(
+                        text = ollamaEvent.accumulatedText,
+                        source = BotResponse.Source.LLM,
+                        modelId = ollamaEvent.modelName,
+                        roleTitle = OLLAMA_FALLBACK_ROLE,
+                        isStreaming = true
+                    )
+                    refreshVisibleMessages()
+                }
+
+                is OllamaStreamEvent.Completed -> {
+                    val completedMsg = (streamingBotMessage ?: placeholderBotMessage).copy(
+                        text = ollamaEvent.fullText,
+                        source = BotResponse.Source.LLM,
+                        modelId = ollamaEvent.modelName,
+                        roleTitle = OLLAMA_FALLBACK_ROLE,
+                        isStreaming = false
+                    )
+                    streamingBotMessage = null
+                    geminiService.appendTurn(prompt, ollamaEvent.fullText)
+                    _uiState.update { state ->
+                        state.copy(
+                            isProcessing = false,
+                            isUsingOllamaFallback = false,
+                            activeModelName = ollamaEvent.modelName,
+                            errorMessage = null,
+                            lastFailedPrompt = null
+                        )
+                    }
+
+                    val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
+                    val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
+                    if (saveResult.isFailure) {
+                        persistedMessages = persistedMessages + completedMsg
+                    }
+                    refreshVisibleMessages()
+
+                    if (_uiState.value.isTtsEnabled) {
+                        _ttsEvents.tryEmit(ollamaEvent.fullText)
+                    }
+                }
+
+                is OllamaStreamEvent.Error -> {
+                    val partialOllama = streamingBotMessage?.takeIf { it.text.isNotBlank() }?.copy(
+                        isStreaming = false
+                    )
+                    streamingBotMessage = null
+                    if (partialOllama != null) {
+                        val docId = "b_${partialOllama.timestampMillis}_${partialOllama.id}"
+                        val saveResult = userRepository.saveMessage(currentUserId, docId, partialOllama)
+                        if (saveResult.isFailure) {
+                            persistedMessages = persistedMessages + partialOllama
                         }
                         _uiState.update { state ->
                             state.copy(
                                 isProcessing = false,
-                                errorMessage = event.message,
+                                isUsingOllamaFallback = false,
+                                errorMessage = ollamaEvent.message,
+                                lastFailedPrompt = prompt
+                            )
+                        }
+                        refreshVisibleMessages()
+                        return@collect
+                    }
+
+                    // If Ollama is also unreachable, check offline local math/DB/greetings before failing
+                    val offlineReply = withContext(Dispatchers.IO) {
+                        localEngine.reply(prompt, allowLocalLlm = false)
+                    }
+                    if (offlineReply.source != BotResponse.Source.NONE) {
+                        val offlineMsg = ChatMessage(
+                            text = offlineReply.text,
+                            type = ChatMessage.Type.BOT,
+                            source = offlineReply.source,
+                            modelId = offlineReply.modelId,
+                            roleTitle = offlineReply.roleTitle ?: "Offline Local"
+                        )
+                        _uiState.update { state ->
+                            state.copy(
+                                isProcessing = false,
+                                isUsingOllamaFallback = false,
+                                errorMessage = null,
+                                lastFailedPrompt = null
+                            )
+                        }
+                        val docId = "b_${offlineMsg.timestampMillis}_${offlineMsg.id}"
+                        val saveResult = userRepository.saveMessage(currentUserId, docId, offlineMsg)
+                        if (saveResult.isFailure) {
+                            persistedMessages = persistedMessages + offlineMsg
+                        }
+                        refreshVisibleMessages()
+                        if (_uiState.value.isTtsEnabled) {
+                            _ttsEvents.tryEmit(offlineReply.text)
+                        }
+                    } else {
+                        _uiState.update { state ->
+                            state.copy(
+                                isProcessing = false,
+                                isUsingOllamaFallback = false,
+                                errorMessage = "Gemini unavailable ($geminiError). Ollama fallback failed: ${ollamaEvent.message}",
                                 lastFailedPrompt = prompt
                             )
                         }
@@ -359,6 +555,7 @@ class ChatViewModel(
         _uiState.update { state ->
             state.copy(
                 isProcessing = true,
+                isUsingOllamaFallback = false,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
@@ -377,7 +574,9 @@ class ChatViewModel(
             val botMessage = ChatMessage(
                 text = response.text,
                 type = ChatMessage.Type.BOT,
-                source = response.source
+                source = response.source,
+                modelId = response.modelId,
+                roleTitle = response.roleTitle
             )
             _uiState.update { it.copy(isProcessing = false) }
             val docId = "b_${botMessage.timestampMillis}_${botMessage.id}"
@@ -417,7 +616,13 @@ class ChatViewModel(
     }
 
     fun setUseGeminiReasoning(enabled: Boolean) {
-        _uiState.update { it.copy(useGeminiReasoning = enabled, errorMessage = null) }
+        _uiState.update {
+            it.copy(
+                useGeminiReasoning = enabled,
+                isUsingOllamaFallback = false,
+                errorMessage = null
+            )
+        }
     }
 
     fun train(question: String, answer: String) {
@@ -545,6 +750,7 @@ class ChatViewModel(
         _uiState.update {
             it.copy(
                 isProcessing = false,
+                isUsingOllamaFallback = false,
                 errorMessage = null,
                 lastFailedPrompt = null
             )
@@ -566,5 +772,6 @@ class ChatViewModel(
 
     companion object {
         private const val TAG = "ChatVM"
+        private const val OLLAMA_FALLBACK_ROLE = "Ollama Fallback"
     }
 }

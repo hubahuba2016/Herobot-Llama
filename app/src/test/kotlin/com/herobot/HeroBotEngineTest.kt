@@ -6,6 +6,8 @@ import com.herobot.ai.ReasoningSelection
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
+import com.herobot.engine.OllamaChatTurn
+import com.herobot.engine.OllamaClient
 import com.herobot.engine.WebSearchService
 import com.herobot.voice.VoiceAssistant
 import org.junit.Assert.assertEquals
@@ -157,5 +159,50 @@ class HeroBotEngineTest {
         assertFalse(spoken.contains("-"))
         assertFalse(spoken.contains("`"))
         assertEquals("Step by Step\nSolve 2x + 5 = 15\nAnswer: x = 5", spoken)
+    }
+
+    @Test
+    fun ollamaClientDefaultsToGemma3AndResolvesEndpoints() {
+        assertEquals("gemma3:1b", OllamaClient.DEFAULT_MODEL)
+        assertEquals(
+            "http://localhost:11434/api/chat",
+            OllamaClient.resolveChatEndpoint("http://localhost:11434")
+        )
+        assertEquals(
+            "http://localhost:11434/api/chat",
+            OllamaClient.resolveChatEndpoint("http://localhost:11434/api/generate/")
+        )
+        assertEquals(
+            "http://192.168.1.25:11434/api/generate",
+            OllamaClient.resolveGenerateEndpoint("http://192.168.1.25:11434/api/chat")
+        )
+    }
+
+    @Test
+    fun ollamaChatPayloadIncludesGemmaModelHistoryAndOptions() {
+        val payload = OllamaClient.buildChatRequestPayload(
+            userPrompt = "What is Kotlin?",
+            history = listOf(OllamaChatTurn("user", "Hi"), OllamaChatTurn("assistant", "Hello!")),
+            learnedMemories = listOf("creator" to "HeroBot Team"),
+            localHint = null,
+            model = "",
+            temperature = 0.6,
+            topP = 0.85,
+            stream = true
+        )
+
+        assertEquals("gemma3:1b", payload.getString("model"))
+        assertTrue(payload.getBoolean("stream"))
+        val options = payload.getJSONObject("options")
+        assertEquals(0.6, options.getDouble("temperature"), 0.0001)
+        assertEquals(0.85, options.getDouble("top_p"), 0.0001)
+
+        val messages = payload.getJSONArray("messages")
+        assertEquals(4, messages.length())
+        assertEquals("system", messages.getJSONObject(0).getString("role"))
+        assertTrue(messages.getJSONObject(0).getString("content").contains("HeroBot Team"))
+        assertEquals("user", messages.getJSONObject(1).getString("role"))
+        assertEquals("assistant", messages.getJSONObject(2).getString("role"))
+        assertEquals("What is Kotlin?", messages.getJSONObject(3).getString("content"))
     }
 }

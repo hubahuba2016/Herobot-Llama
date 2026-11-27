@@ -230,6 +230,19 @@ class GeminiChatService {
             }
     }
 
+    fun appendTurn(userPrompt: String, modelReply: String) {
+        val u = userPrompt.trim()
+        val m = modelReply.trim()
+        if (u.isEmpty() || m.isEmpty()) return
+        historyTurns.add(ChatTurn("user", u))
+        historyTurns.add(ChatTurn("model", m))
+        if (historyTurns.size > MAX_HISTORY_CONTENTS) {
+            repeat(historyTurns.size - MAX_HISTORY_CONTENTS) {
+                historyTurns.removeAt(0)
+            }
+        }
+    }
+
     fun clearHistory() {
         historyTurns.clear()
     }

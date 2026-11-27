@@ -30,11 +30,19 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
                 "$COL_KEY TEXT PRIMARY KEY, " +
                 "$COL_VALUE TEXT NOT NULL)"
         )
-        seedDefaultParameters(db)
+        seedDefaultParametersIfMissing(db)
+        if (oldVersion < 4) {
+            // Upgrade previous default llama3.2:1b to gemma3:1b while preserving user-customized models
+            db.execSQL(
+                "UPDATE $PARAM_TABLE SET $COL_VALUE = ? WHERE $COL_KEY = ? AND $COL_VALUE = ?",
+                arrayOf(DEFAULT_OLLAMA_MODEL, KEY_MODEL, "llama3.2:1b")
+            )
+        }
     }
 
     private fun seedDefaultParameters(db: SQLiteDatabase) {
-        insertOrUpdateParameter(db, KEY_MODEL, "llama3.2:1b")
+        insertOrUpdateParameter(db, KEY_MODEL, DEFAULT_OLLAMA_MODEL)
+        insertOrUpdateParameter(db, KEY_OLLAMA_URL, DEFAULT_OLLAMA_URL)
         insertOrUpdateParameter(db, KEY_TEMPERATURE, "0.7")
         insertOrUpdateParameter(db, KEY_TOP_P, "0.9")
         insertOrUpdateParameter(db, KEY_STREAM, "false")
@@ -44,12 +52,32 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         insertOrUpdateParameter(db, KEY_MAX_WEB_RESULTS, "3")
     }
 
+    private fun seedDefaultParametersIfMissing(db: SQLiteDatabase) {
+        insertParameterIfMissing(db, KEY_MODEL, DEFAULT_OLLAMA_MODEL)
+        insertParameterIfMissing(db, KEY_OLLAMA_URL, DEFAULT_OLLAMA_URL)
+        insertParameterIfMissing(db, KEY_TEMPERATURE, "0.7")
+        insertParameterIfMissing(db, KEY_TOP_P, "0.9")
+        insertParameterIfMissing(db, KEY_STREAM, "false")
+        insertParameterIfMissing(db, KEY_WEB_SEARCH_ENABLED, "true")
+        insertParameterIfMissing(db, KEY_SEARCH_ENGINE, "duckduckgo")
+        insertParameterIfMissing(db, KEY_SEARCH_COUNTRY, "us")
+        insertParameterIfMissing(db, KEY_MAX_WEB_RESULTS, "3")
+    }
+
     private fun insertOrUpdateParameter(db: SQLiteDatabase, key: String, value: String) {
         val values = ContentValues().apply {
             put(COL_KEY, key)
             put(COL_VALUE, value)
         }
         db.insertWithOnConflict(PARAM_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    private fun insertParameterIfMissing(db: SQLiteDatabase, key: String, value: String) {
+        val values = ContentValues().apply {
+            put(COL_KEY, key)
+            put(COL_VALUE, value)
+        }
+        db.insertWithOnConflict(PARAM_TABLE, null, values, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
     fun insertQA(question: String, answer: String) {
@@ -134,7 +162,7 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
 
     companion object {
         private const val DB_NAME = "chatbot.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
 
         const val TABLE = "chatbot"
         const val COL_Q = "question"
@@ -145,6 +173,7 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         const val COL_VALUE = "parameter_value"
 
         const val KEY_MODEL = "model"
+        const val KEY_OLLAMA_URL = "ollama_url"
         const val KEY_TEMPERATURE = "temperature"
         const val KEY_TOP_P = "top_p"
         const val KEY_STREAM = "stream"
@@ -152,5 +181,8 @@ class DBHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         const val KEY_SEARCH_ENGINE = "search_engine"
         const val KEY_SEARCH_COUNTRY = "search_country"
         const val KEY_MAX_WEB_RESULTS = "max_web_results"
+
+        const val DEFAULT_OLLAMA_MODEL = "gemma3:1b"
+        const val DEFAULT_OLLAMA_URL = "http://localhost:11434"
     }
 }

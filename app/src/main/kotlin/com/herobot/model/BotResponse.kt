@@ -5,7 +5,9 @@ package com.herobot.model
  */
 data class BotResponse(
     val text: String,
-    val source: Source
+    val source: Source,
+    val modelId: String? = null,
+    val roleTitle: String? = null
 ) {
     enum class Source(val label: String) {
         GEMINI("Gemini"),
