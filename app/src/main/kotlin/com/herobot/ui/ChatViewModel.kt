@@ -18,6 +18,8 @@ import com.herobot.ai.OnDeviceStreamEvent
 import com.herobot.ai.ReasoningSelection
 import com.herobot.data.DBHelper
 import com.herobot.data.UserApiKeyStore
+import com.herobot.data.local.ConversationHistoryRepository
+import com.herobot.data.local.ConversationSessionSummary
 import com.herobot.data.remote.UserChatRepository
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
@@ -29,6 +31,7 @@ import com.herobot.model.BotResponse
 import com.herobot.model.ChatMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +40,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,6 +63,9 @@ data class ChatUiState(
     val showTrainDialog: Boolean = false,
     val showParametersDialog: Boolean = false,
     val showAccountDialog: Boolean = false,
+    val showHistoryDialog: Boolean = false,
+    val activeSessionId: String? = null,
+    val savedSessions: List<ConversationSessionSummary> = emptyList(),
     val parameters: Map<String, String> = emptyMap(),
     val userDisplayName: String = "HeroBot User",
     val userEmail: String? = null,
@@ -70,9 +78,11 @@ data class ChatUiState(
     val huggingFaceToken: String = ""
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val localEngine: ChatbotEngine,
     private val userRepository: UserChatRepository,
+    private val conversationRepository: ConversationHistoryRepository,
     private val apiKeyStore: UserApiKeyStore,
     private val localModelManager: LocalModelManager,
     private val onDeviceGemmaService: OnDeviceGemmaService,
@@ -85,6 +95,7 @@ class ChatViewModel(
     private val geminiService = GeminiChatService()
 
     private var activeGenerationJob: Job? = null
+    private val _activeSessionId = MutableStateFlow<String?>(null)
     private var persistedMessages: List<ChatMessage> = emptyList()
     private var pendingUserMessage: ChatMessage? = null
     private var streamingBotMessage: ChatMessage? = null
@@ -155,26 +166,41 @@ class ChatViewModel(
             }
         }
 
+        observeLocalSessions()
+        observeActiveSessionMessages()
         observeUserMessages()
         observeUserLearnedQa()
     }
 
-    private fun observeUserMessages() {
+    private fun observeLocalSessions() {
         viewModelScope.launch {
-            userRepository.observeMessages(currentUserId)
-                .catch { error ->
-                    val firestoreError = generateSequence(error) { it.cause }
-                        .filterIsInstance<FirebaseFirestoreException>()
-                        .firstOrNull()
-                    if (firestoreError == null && error is CancellationException) throw error
-                    val rootError = firestoreError ?: error
-                    Log.w(TAG, "Error observing user messages", rootError)
-                    _uiState.update {
-                        it.copy(errorMessage = rootError.localizedMessage ?: "Failed to sync chat history.")
-                    }
+            val initialSessionId = conversationRepository.getOrCreateDefaultSession(currentUserId)
+            if (_activeSessionId.value == null) {
+                _activeSessionId.value = initialSessionId
+                _uiState.update { it.copy(activeSessionId = initialSessionId) }
+            }
+            conversationRepository.observeSessions(currentUserId)
+                .catch { err ->
+                    Log.w(TAG, "Error observing Room sessions", err)
                 }
-                .collect { records ->
-                    persistedMessages = records.map { it.toChatMessage() }
+                .collect { sessions ->
+                    _uiState.update { it.copy(savedSessions = sessions) }
+                }
+        }
+    }
+
+    private fun observeActiveSessionMessages() {
+        viewModelScope.launch {
+            _activeSessionId
+                .filterNotNull()
+                .flatMapLatest { sessionId ->
+                    conversationRepository.observeSessionMessages(currentUserId, sessionId)
+                }
+                .catch { err ->
+                    Log.w(TAG, "Error observing Room messages", err)
+                }
+                .collect { entities ->
+                    persistedMessages = entities.map { it.toChatMessage() }
                     val currentPending = pendingUserMessage
                     if (currentPending != null && persistedMessages.any {
                             it.type == ChatMessage.Type.USER &&
@@ -188,6 +214,23 @@ class ChatViewModel(
                         geminiService.restoreHistory(persistedMessages)
                     }
                     refreshVisibleMessages()
+                }
+        }
+    }
+
+    private fun observeUserMessages() {
+        viewModelScope.launch {
+            userRepository.observeMessages(currentUserId)
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val rootError = firestoreError ?: error
+                    Log.w(TAG, "Error observing cloud messages", rootError)
+                }
+                .collect { records ->
+                    conversationRepository.syncCloudRecordsIntoPrimarySession(currentUserId, records)
                 }
         }
     }
@@ -250,9 +293,7 @@ class ChatViewModel(
             refreshVisibleMessages()
             viewModelScope.launch {
                 val docId = "u_${userMessage.timestampMillis}_${userMessage.id}"
-                userRepository.saveMessage(currentUserId, docId, userMessage).onFailure { err ->
-                    Log.w(TAG, "Failed to persist user message: ${err.message}")
-                }
+                persistMessage(docId, userMessage)
             }
         }
 
@@ -362,10 +403,7 @@ class ChatViewModel(
                         }
 
                         val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
-                        val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
-                        if (saveResult.isFailure) {
-                            persistedMessages = persistedMessages + completedMsg
-                        }
+                        persistMessage(docId, completedMsg)
                         refreshVisibleMessages()
 
                         if (_uiState.value.isTtsEnabled) {
@@ -380,7 +418,7 @@ class ChatViewModel(
                         if (partial != null) {
                             streamingBotMessage = null
                             val docId = "b_${partial.timestampMillis}_${partial.id}"
-                            userRepository.saveMessage(currentUserId, docId, partial)
+                            persistMessage(docId, partial)
                             _uiState.update { state ->
                                 state.copy(
                                     isProcessing = false,
@@ -532,10 +570,7 @@ class ChatViewModel(
                     }
 
                     val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
-                    val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
-                    if (saveResult.isFailure) {
-                        persistedMessages = persistedMessages + completedMsg
-                    }
+                    persistMessage(docId, completedMsg)
                     refreshVisibleMessages()
 
                     if (_uiState.value.isTtsEnabled) {
@@ -552,10 +587,7 @@ class ChatViewModel(
                     streamingBotMessage = null
                     if (partial != null) {
                         val docId = "b_${partial.timestampMillis}_${partial.id}"
-                        val saveResult = userRepository.saveMessage(currentUserId, docId, partial)
-                        if (saveResult.isFailure) {
-                            persistedMessages = persistedMessages + partial
-                        }
+                        persistMessage(docId, partial)
                         _uiState.update { state ->
                             state.copy(
                                 isProcessing = false,
@@ -682,10 +714,7 @@ class ChatViewModel(
                     }
 
                     val docId = "b_${completedMsg.timestampMillis}_${completedMsg.id}"
-                    val saveResult = userRepository.saveMessage(currentUserId, docId, completedMsg)
-                    if (saveResult.isFailure) {
-                        persistedMessages = persistedMessages + completedMsg
-                    }
+                    persistMessage(docId, completedMsg)
                     refreshVisibleMessages()
 
                     if (_uiState.value.isTtsEnabled) {
@@ -700,10 +729,7 @@ class ChatViewModel(
                     streamingBotMessage = null
                     if (partialOllama != null) {
                         val docId = "b_${partialOllama.timestampMillis}_${partialOllama.id}"
-                        val saveResult = userRepository.saveMessage(currentUserId, docId, partialOllama)
-                        if (saveResult.isFailure) {
-                            persistedMessages = persistedMessages + partialOllama
-                        }
+                        persistMessage(docId, partialOllama)
                         _uiState.update { state ->
                             state.copy(
                                 isProcessing = false,
@@ -738,10 +764,7 @@ class ChatViewModel(
                             )
                         }
                         val docId = "b_${offlineMsg.timestampMillis}_${offlineMsg.id}"
-                        val saveResult = userRepository.saveMessage(currentUserId, docId, offlineMsg)
-                        if (saveResult.isFailure) {
-                            persistedMessages = persistedMessages + offlineMsg
-                        }
+                        persistMessage(docId, offlineMsg)
                         refreshVisibleMessages()
                         if (_uiState.value.isTtsEnabled) {
                             _ttsEvents.tryEmit(offlineReply.text)
@@ -837,13 +860,35 @@ class ChatViewModel(
         )
         _uiState.update { it.copy(isProcessing = false, isUsingOnDeviceGemma = false) }
         val docId = "b_${botMessage.timestampMillis}_${botMessage.id}"
-        val saveResult = userRepository.saveMessage(currentUserId, docId, botMessage)
-        if (saveResult.isFailure) {
-            persistedMessages = persistedMessages + botMessage
-            refreshVisibleMessages()
-        }
+        persistMessage(docId, botMessage)
+        refreshVisibleMessages()
         if (_uiState.value.isTtsEnabled) {
             _ttsEvents.tryEmit(response.text)
+        }
+    }
+
+    private suspend fun persistMessage(docId: String, message: ChatMessage) {
+        val sid = _activeSessionId.value ?: conversationRepository.getOrCreateDefaultSession(currentUserId).also {
+            _activeSessionId.value = it
+            _uiState.update { state -> state.copy(activeSessionId = it) }
+        }
+        try {
+            conversationRepository.saveMessage(
+                userId = currentUserId,
+                sessionId = sid,
+                messageId = docId,
+                message = message
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to persist message to Room", e)
+        }
+
+        if (sid == ConversationHistoryRepository.primarySessionId(currentUserId)) {
+            userRepository.saveMessage(currentUserId, docId, message).onFailure { err ->
+                Log.w(TAG, "Cloud sync warning: ${err.message}")
+            }
         }
     }
 
@@ -967,7 +1012,7 @@ class ChatViewModel(
                 source = BotResponse.Source.SYSTEM
             )
             val msgDocId = "s_${systemMsg.timestampMillis}_${systemMsg.id}"
-            userRepository.saveMessage(currentUserId, msgDocId, systemMsg)
+            persistMessage(msgDocId, systemMsg)
 
             _uiState.update {
                 it.copy(
@@ -1016,6 +1061,84 @@ class ChatViewModel(
 
     fun dismissAccountDialog() {
         _uiState.update { it.copy(showAccountDialog = false) }
+    }
+
+    fun openHistoryDialog() {
+        _uiState.update { it.copy(showHistoryDialog = true) }
+    }
+
+    fun dismissHistoryDialog() {
+        _uiState.update { it.copy(showHistoryDialog = false) }
+    }
+
+    fun selectSession(sessionId: String) {
+        if (sessionId == _activeSessionId.value) return
+        activeGenerationJob?.cancel()
+        streamingBotMessage = null
+        pendingUserMessage = null
+        onDeviceGemmaService.resetConversation()
+        _activeSessionId.value = sessionId
+        _uiState.update {
+            it.copy(
+                activeSessionId = sessionId,
+                isProcessing = false,
+                isUsingOllamaFallback = false,
+                isUsingOnDeviceGemma = false,
+                errorMessage = null,
+                lastFailedPrompt = null
+            )
+        }
+    }
+
+    fun startNewSession() {
+        activeGenerationJob?.cancel()
+        streamingBotMessage = null
+        pendingUserMessage = null
+        geminiService.clearHistory()
+        onDeviceGemmaService.resetConversation()
+        viewModelScope.launch {
+            val newSessionId = conversationRepository.createNewSession(currentUserId)
+            _activeSessionId.value = newSessionId
+            _uiState.update {
+                it.copy(
+                    activeSessionId = newSessionId,
+                    isProcessing = false,
+                    isUsingOllamaFallback = false,
+                    isUsingOnDeviceGemma = false,
+                    errorMessage = null,
+                    lastFailedPrompt = null
+                )
+            }
+        }
+    }
+
+    fun deleteSession(sessionId: String) {
+        viewModelScope.launch {
+            val deletingActive = sessionId == _activeSessionId.value
+            conversationRepository.deleteSession(currentUserId, sessionId)
+            if (sessionId == ConversationHistoryRepository.primarySessionId(currentUserId)) {
+                userRepository.clearMessages(currentUserId)
+            }
+            if (deletingActive) {
+                activeGenerationJob?.cancel()
+                streamingBotMessage = null
+                pendingUserMessage = null
+                geminiService.clearHistory()
+                onDeviceGemmaService.resetConversation()
+                val nextSessionId = conversationRepository.getOrCreateDefaultSession(currentUserId)
+                _activeSessionId.value = nextSessionId
+                _uiState.update {
+                    it.copy(
+                        activeSessionId = nextSessionId,
+                        isProcessing = false,
+                        isUsingOllamaFallback = false,
+                        isUsingOnDeviceGemma = false,
+                        errorMessage = null,
+                        lastFailedPrompt = null
+                    )
+                }
+            }
+        }
     }
 
     fun savePersonalApiKey(apiKey: String) {
@@ -1074,10 +1197,12 @@ class ChatViewModel(
                 lastFailedPrompt = null
             )
         }
+        val sid = _activeSessionId.value ?: return
         viewModelScope.launch {
-            userRepository.clearMessages(currentUserId).onFailure { err ->
-                _uiState.update {
-                    it.copy(errorMessage = err.localizedMessage ?: "Failed to clear cloud history.")
+            conversationRepository.clearSessionMessages(currentUserId, sid)
+            if (sid == ConversationHistoryRepository.primarySessionId(currentUserId)) {
+                userRepository.clearMessages(currentUserId).onFailure { err ->
+                    Log.w(TAG, "Cloud clear warning: ${err.message}")
                 }
             }
         }

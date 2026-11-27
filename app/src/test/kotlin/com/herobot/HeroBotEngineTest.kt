@@ -3,12 +3,15 @@ package com.herobot
 import com.herobot.ai.AssistantRole
 import com.herobot.ai.GeminiModelRouter
 import com.herobot.ai.ReasoningSelection
+import com.herobot.data.local.ConversationMessageEntity
 import com.herobot.engine.ChatbotEngine
 import com.herobot.engine.MathEngine
 import com.herobot.engine.NLPHelper
 import com.herobot.engine.OllamaChatTurn
 import com.herobot.engine.OllamaClient
 import com.herobot.engine.WebSearchService
+import com.herobot.model.BotResponse
+import com.herobot.model.ChatMessage
 import com.herobot.voice.VoiceAssistant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -204,5 +207,29 @@ class HeroBotEngineTest {
         assertEquals("user", messages.getJSONObject(1).getString("role"))
         assertEquals("assistant", messages.getJSONObject(2).getString("role"))
         assertEquals("What is Kotlin?", messages.getJSONObject(3).getString("content"))
+    }
+
+    @Test
+    fun roomMessageEntityMapsToChatMessageAccurately() {
+        val entity = ConversationMessageEntity(
+            id = "b_1732680000000_12",
+            sessionId = "primary_uid123",
+            userId = "uid123",
+            text = "Here is the local Gemma 3 1B reply.",
+            senderType = ChatMessage.Type.BOT.name,
+            source = BotResponse.Source.LLM.name,
+            modelId = "gemma3-1b-it",
+            roleTitle = "On-Device Gemma",
+            clientTimestampMillis = 1732680000000L
+        )
+
+        val mapped = entity.toChatMessage()
+        assertEquals(ChatMessage.Type.BOT, mapped.type)
+        assertEquals(BotResponse.Source.LLM, mapped.source)
+        assertEquals("gemma3-1b-it", mapped.modelId)
+        assertEquals("On-Device Gemma", mapped.roleTitle)
+        assertEquals("Here is the local Gemma 3 1B reply.", mapped.text)
+        assertEquals(1732680000000L, mapped.timestampMillis)
+        assertFalse(mapped.isStreaming)
     }
 }

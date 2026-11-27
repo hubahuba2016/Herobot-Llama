@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Tune
@@ -91,6 +92,7 @@ import com.herobot.ai.LocalModelStatus
 import com.herobot.ai.ReasoningSelection
 import com.herobot.ui.components.AccountDialog
 import com.herobot.ui.components.ChatMessageRow
+import com.herobot.ui.components.HistoryDialog
 import com.herobot.ui.components.ParametersDialog
 import com.herobot.ui.components.TrainBotDialog
 
@@ -129,6 +131,11 @@ fun ChatScreen(
     onDismissAccountDialog: () -> Unit,
     onSavePersonalApiKey: (String) -> Unit,
     onClearPersonalApiKey: () -> Unit,
+    onOpenHistoryDialog: () -> Unit,
+    onDismissHistoryDialog: () -> Unit,
+    onSelectSession: (String) -> Unit,
+    onNewChatSession: () -> Unit,
+    onDeleteSession: (String) -> Unit,
     onSignOutClick: () -> Unit,
     onClearChat: () -> Unit
 ) {
@@ -184,6 +191,17 @@ fun ChatScreen(
                 onSignOutClick()
             },
             onDismiss = onDismissAccountDialog
+        )
+    }
+
+    if (uiState.showHistoryDialog) {
+        HistoryDialog(
+            sessions = uiState.savedSessions,
+            activeSessionId = uiState.activeSessionId,
+            onSelectSession = onSelectSession,
+            onNewChat = onNewChatSession,
+            onDeleteSession = onDeleteSession,
+            onDismiss = onDismissHistoryDialog
         )
     }
 
@@ -243,6 +261,15 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        IconButton(
+                            onClick = onOpenHistoryDialog,
+                            modifier = Modifier.testTag("history_action_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.History,
+                                contentDescription = stringResource(R.string.history_action_cd)
+                            )
+                        }
                         IconButton(
                             onClick = onOpenAccountDialog,
                             modifier = Modifier.testTag("account_action_button")

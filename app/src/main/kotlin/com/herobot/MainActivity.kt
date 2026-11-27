@@ -32,6 +32,8 @@ import com.herobot.auth.attemptAutoSignIn
 import com.herobot.auth.authStateFlow
 import com.herobot.auth.signOut
 import com.herobot.data.UserApiKeyStore
+import com.herobot.data.local.ConversationHistoryRepository
+import com.herobot.data.local.HeroBotDatabase
 import com.herobot.data.remote.UserChatRepository
 import com.herobot.engine.ChatbotEngine
 import com.herobot.ui.AuthScreen
@@ -129,6 +131,9 @@ private fun AuthenticatedChatHost(
                     R.raw.chatbot_training_data
                 )
                 val repository = UserChatRepository(db)
+                val conversationRepository = ConversationHistoryRepository(
+                    HeroBotDatabase.getInstance(app).conversationDao()
+                )
                 val apiKeyStore = UserApiKeyStore(app)
                 val localModelManager = LocalModelManager(app)
                 val onDeviceGemmaService = OnDeviceGemmaService(app)
@@ -136,6 +141,7 @@ private fun AuthenticatedChatHost(
                 ChatViewModel(
                     localEngine = localEngine,
                     userRepository = repository,
+                    conversationRepository = conversationRepository,
                     apiKeyStore = apiKeyStore,
                     localModelManager = localModelManager,
                     onDeviceGemmaService = onDeviceGemmaService,
@@ -224,6 +230,11 @@ private fun AuthenticatedChatHost(
         onDismissAccountDialog = viewModel::dismissAccountDialog,
         onSavePersonalApiKey = viewModel::savePersonalApiKey,
         onClearPersonalApiKey = viewModel::clearPersonalApiKey,
+        onOpenHistoryDialog = viewModel::openHistoryDialog,
+        onDismissHistoryDialog = viewModel::dismissHistoryDialog,
+        onSelectSession = viewModel::selectSession,
+        onNewChatSession = viewModel::startNewSession,
+        onDeleteSession = viewModel::deleteSession,
         onSignOutClick = {
             voiceAssistant.stop()
             viewModel.prepareForSignOut()
