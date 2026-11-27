@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "804236145136",
+    "project_id": "gen-lang-client-0401403962",
+    "storage_bucket": "gen-lang-client-0401403962.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:804236145136:android:78764eeab778a1c6a0ad35",
+        "android_client_info": {
+          "package_name": "com.aistudio.herobot.kxmpzq"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "804236145136-tf39klj2s82tave77vtbcl29g53uvddf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.herobot.kxmpzq",
+            "certificate_hash": "9cc34b35748974ad7aa2acd281f279094eacc5a0"
+          }
+        },
+        {
+          "client_id": "804236145136-vmnh4fo9omh2idif1tqkgc7sipqnfv82.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.herobot.kxmpzq",
+            "certificate_hash": "828a521d1a6cd309614ceb8b41c6bd34d7de96a0"
+          }
+        },
+        {
+          "client_id": "804236145136-5vr4m466jtk3b6j307qhpan81tgpdlik.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD7vMa09wnH2pq4OjNowZIIDEL7CX7Ed2Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "804236145136-5vr4m466jtk3b6j307qhpan81tgpdlik.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
